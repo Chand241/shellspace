@@ -53,9 +53,10 @@ export function executeBashScript(
     let clean = expr.trim();
     // Replace variable names with their values
     clean = clean.replace(/([a-zA-Z_][a-zA-Z0-9_]*)/g, (match) => {
+      if (match === "true" || match === "false") return match;
       const v = variables[match];
       if (typeof v === "number") return String(v);
-      if (typeof v === "string" && !isNaN(Number(v))) return v;
+      if (typeof v === "string" && !isNaN(Number(v)) && v.trim() !== "") return v;
       return "0";
     });
 
@@ -63,10 +64,57 @@ export function executeBashScript(
       // Safe arithmetic evaluator
       // eslint-disable-next-line no-new-func
       const result = new Function(`return (${clean})`)();
+      if (typeof result === "boolean") return result ? 1 : 0;
       return typeof result === "number" && !isNaN(result) ? result : 0;
     } catch {
       return 0;
     }
+  }
+
+  function evalCondition(cond: string): boolean {
+    let c = cond.trim();
+
+    // (( expr ))
+    if (c.startsWith("((") && c.endsWith("))")) {
+      const expr = c.slice(2, -2).trim();
+      return evaluateArithmetic(expr) !== 0;
+    }
+
+    // [[ expr ]] or [ expr ]
+    if ((c.startsWith("[[") && c.endsWith("]]")) || (c.startsWith("[") && c.endsWith("]"))) {
+      let inner = c.startsWith("[[") ? c.slice(2, -2).trim() : c.slice(1, -1).trim();
+
+      const zMatch = inner.match(/^-z\s+["']?(.*?)["']?$/);
+      if (zMatch) {
+        return expandVariables(zMatch[1]).trim() === "";
+      }
+      const nMatch = inner.match(/^-n\s+["']?(.*?)["']?$/);
+      if (nMatch) {
+        return expandVariables(nMatch[1]).trim() !== "";
+      }
+
+      inner = inner
+        .replace(/\s+-eq\s+/g, " == ")
+        .replace(/\s+-ne\s+/g, " != ")
+        .replace(/\s+-gt\s+/g, " > ")
+        .replace(/\s+-ge\s+/g, " >= ")
+        .replace(/\s+-lt\s+/g, " < ")
+        .replace(/\s+-le\s+/g, " <= ")
+        .replace(/\s+=\s+/g, " == ");
+
+      inner = expandVariables(inner);
+      return evaluateArithmetic(inner) !== 0;
+    }
+
+    if (c === "true") return true;
+    if (c === "false") return false;
+
+    return evaluateArithmetic(c) !== 0;
+  }
+
+  function extractCondition(line: string, kw: "if" | "elif"): string {
+    let rest = line.slice(kw.length).trim();
+    return rest.replace(/;\s*then$/, "").replace(/\s+then$/, "").trim();
   }
 
   // Expand variables in string: $VAR, ${VAR}, $((expr)), ${#arr[@]}
@@ -292,9 +340,81 @@ export function executeBashScript(
   let safetyCounter = 0;
   const maxIterations = 5000;
 
+  interface IfFrame {
+    parentExecuting: boolean;
+    branchMatched: boolean;
+    executing: boolean;
+  }
+  const ifStack: IfFrame[] = [];
+
+  function isCurrentlyExecuting(): boolean {
+    if (ifStack.length === 0) return true;
+    return ifStack[ifStack.length - 1].executing;
+  }
+
   try {
     while (ip < lines.length && safetyCounter++ < maxIterations) {
       const line = lines[ip];
+
+      // ─── If / Elif / Else / Fi / Then ──────────────────────────────────────
+      if (line.startsWith("if ") || line.startsWith("if(") || line.startsWith("if\t")) {
+        const parentExec = isCurrentlyExecuting();
+        if (!parentExec) {
+          ifStack.push({ parentExecuting: false, branchMatched: true, executing: false });
+        } else {
+          const cond = extractCondition(line, "if");
+          const matched = evalCondition(cond);
+          ifStack.push({ parentExecuting: true, branchMatched: matched, executing: matched });
+        }
+        ip++;
+        continue;
+      }
+
+      if (line.startsWith("elif ") || line.startsWith("elif(") || line.startsWith("elif\t")) {
+        const frame = ifStack[ifStack.length - 1];
+        if (frame) {
+          if (!frame.parentExecuting || frame.branchMatched) {
+            frame.executing = false;
+          } else {
+            const cond = extractCondition(line, "elif");
+            const matched = evalCondition(cond);
+            frame.branchMatched = matched;
+            frame.executing = matched;
+          }
+        }
+        ip++;
+        continue;
+      }
+
+      if (line === "else" || line.startsWith("else ") || line.startsWith("else;")) {
+        const frame = ifStack[ifStack.length - 1];
+        if (frame) {
+          if (!frame.parentExecuting || frame.branchMatched) {
+            frame.executing = false;
+          } else {
+            frame.branchMatched = true;
+            frame.executing = true;
+          }
+        }
+        ip++;
+        continue;
+      }
+
+      if (line === "fi" || line.startsWith("fi ") || line.startsWith("fi;")) {
+        if (ifStack.length > 0) ifStack.pop();
+        ip++;
+        continue;
+      }
+
+      if (line === "then" || line.startsWith("then ") || line.startsWith("then;")) {
+        ip++;
+        continue;
+      }
+
+      if (!isCurrentlyExecuting()) {
+        ip++;
+        continue;
+      }
 
       // ─── read command ──────────────────────────────────────────────────────
       // Handles: read VAR, read -r VAR, read -p "prompt" VAR, read -rp "..." VAR
@@ -506,13 +626,59 @@ export function* executeBashScriptInteractive(
   // ── helpers (same as executeBashScript) ────────────────────────────────────
   function evaluateArithmetic(expr: string): number {
     let clean = expr.trim().replace(/([a-zA-Z_][a-zA-Z0-9_]*)/g, (m) => {
+      if (m === "true" || m === "false") return m;
       const v = variables[m];
       if (typeof v === "number") return String(v);
-      if (typeof v === "string" && !isNaN(Number(v))) return v;
+      if (typeof v === "string" && !isNaN(Number(v)) && v.trim() !== "") return v;
       return "0";
     });
-    try { const r = new Function(`return (${clean})`)(); return typeof r === "number" && !isNaN(r) ? r : 0; }
-    catch { return 0; }
+    try {
+      const r = new Function(`return (${clean})`)();
+      if (typeof r === "boolean") return r ? 1 : 0;
+      return typeof r === "number" && !isNaN(r) ? r : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  function evalCondition(cond: string): boolean {
+    let c = cond.trim();
+
+    if (c.startsWith("((") && c.endsWith("))")) {
+      const expr = c.slice(2, -2).trim();
+      return evaluateArithmetic(expr) !== 0;
+    }
+
+    if ((c.startsWith("[[") && c.endsWith("]]")) || (c.startsWith("[") && c.endsWith("]"))) {
+      let inner = c.startsWith("[[") ? c.slice(2, -2).trim() : c.slice(1, -1).trim();
+
+      const zMatch = inner.match(/^-z\s+["']?(.*?)["']?$/);
+      if (zMatch) return expandVariables(zMatch[1]).trim() === "";
+      const nMatch = inner.match(/^-n\s+["']?(.*?)["']?$/);
+      if (nMatch) return expandVariables(nMatch[1]).trim() !== "";
+
+      inner = inner
+        .replace(/\s+-eq\s+/g, " == ")
+        .replace(/\s+-ne\s+/g, " != ")
+        .replace(/\s+-gt\s+/g, " > ")
+        .replace(/\s+-ge\s+/g, " >= ")
+        .replace(/\s+-lt\s+/g, " < ")
+        .replace(/\s+-le\s+/g, " <= ")
+        .replace(/\s+=\s+/g, " == ");
+
+      inner = expandVariables(inner);
+      return evaluateArithmetic(inner) !== 0;
+    }
+
+    if (c === "true") return true;
+    if (c === "false") return false;
+
+    return evaluateArithmetic(c) !== 0;
+  }
+
+  function extractCondition(line: string, kw: "if" | "elif"): string {
+    let rest = line.slice(kw.length).trim();
+    return rest.replace(/;\s*then$/, "").replace(/\s+then$/, "").trim();
   }
 
   function expandVariables(str: string): string {
@@ -592,9 +758,81 @@ export function* executeBashScriptInteractive(
   let exitCode = 0;
   let hasOutput = false;
 
+  interface IfFrame {
+    parentExecuting: boolean;
+    branchMatched: boolean;
+    executing: boolean;
+  }
+  const ifStack: IfFrame[] = [];
+
+  function isCurrentlyExecuting(): boolean {
+    if (ifStack.length === 0) return true;
+    return ifStack[ifStack.length - 1].executing;
+  }
+
   try {
     while (ip < lines.length && safety++ < 5000) {
       const line = lines[ip];
+
+      // ── if / elif / else / fi / then control flow ─────────────────────────
+      if (line.startsWith("if ") || line.startsWith("if(") || line.startsWith("if\t")) {
+        const parentExec = isCurrentlyExecuting();
+        if (!parentExec) {
+          ifStack.push({ parentExecuting: false, branchMatched: true, executing: false });
+        } else {
+          const cond = extractCondition(line, "if");
+          const matched = evalCondition(cond);
+          ifStack.push({ parentExecuting: true, branchMatched: matched, executing: matched });
+        }
+        ip++;
+        continue;
+      }
+
+      if (line.startsWith("elif ") || line.startsWith("elif(") || line.startsWith("elif\t")) {
+        const frame = ifStack[ifStack.length - 1];
+        if (frame) {
+          if (!frame.parentExecuting || frame.branchMatched) {
+            frame.executing = false;
+          } else {
+            const cond = extractCondition(line, "elif");
+            const matched = evalCondition(cond);
+            frame.branchMatched = matched;
+            frame.executing = matched;
+          }
+        }
+        ip++;
+        continue;
+      }
+
+      if (line === "else" || line.startsWith("else ") || line.startsWith("else;")) {
+        const frame = ifStack[ifStack.length - 1];
+        if (frame) {
+          if (!frame.parentExecuting || frame.branchMatched) {
+            frame.executing = false;
+          } else {
+            frame.branchMatched = true;
+            frame.executing = true;
+          }
+        }
+        ip++;
+        continue;
+      }
+
+      if (line === "fi" || line.startsWith("fi ") || line.startsWith("fi;")) {
+        if (ifStack.length > 0) ifStack.pop();
+        ip++;
+        continue;
+      }
+
+      if (line === "then" || line.startsWith("then ") || line.startsWith("then;")) {
+        ip++;
+        continue;
+      }
+
+      if (!isCurrentlyExecuting()) {
+        ip++;
+        continue;
+      }
 
       // ── read command ───────────────────────────────────────────────────────
       const readPM = line.match(/^read\s+(?:-[rp]+\s+)?["']([^"']*)["']\s+([a-zA-Z_][a-zA-Z0-9_]*)/);

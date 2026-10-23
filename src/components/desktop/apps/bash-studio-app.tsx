@@ -175,6 +175,7 @@ consume
 type ConsoleLine = {
   text: string;
   isError?: boolean;
+  isInfo?: boolean;
 };
 
 // Execution phases
@@ -267,6 +268,7 @@ export function BashStudioApp() {
       }
 
       if (yld.type === "done") {
+        newLines.push({ text: `\n[Finished in ${yld.durationMs}ms]`, isInfo: true });
         setConsoleLines((prev) => [...prev, ...newLines]);
         setExitCode(yld.exitCode);
         setExecDuration(yld.durationMs);
@@ -456,7 +458,11 @@ export function BashStudioApp() {
                   <div
                     key={i}
                     className={`${
-                      line.isError ? "text-rose-400" : "text-emerald-400"
+                      line.isError
+                        ? "text-rose-400"
+                        : line.isInfo
+                        ? "text-slate-500 text-[11px]"
+                        : "text-emerald-400"
                     } leading-relaxed`}
                   >
                     {line.text || "\u00a0"}
