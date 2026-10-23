@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import React, { useState, useEffect, useRef } from "react";
 import {
@@ -9,7 +9,7 @@ import {
   Terminal,
   Clock,
 } from "lucide-react";
-import { executeBashScript, detectReadVariables } from "@/lib/bash-interpreter";
+import { executeBashScriptInteractive, type InteractiveYield } from "@/lib/bash-interpreter";
 import { useVFSStore } from "@/lib/stores/vfs-store";
 
 interface ScriptTemplate {
@@ -196,10 +196,10 @@ export function BashStudioApp() {
   const [execDuration, setExecDuration] = useState<number | null>(null);
 
   // Interactive input state
-  const [pendingReads, setPendingReads] = useState<Array<{ varName: string; prompt: string }>>([]);
-  const [currentReadIdx, setCurrentReadIdx] = useState(0);
-  const [collectedInputs, setCollectedInputs] = useState<Record<string, string>>({});
   const [currentTyping, setCurrentTyping] = useState("");
+
+  // Generator ref — holds the running script generator between renders
+  const genRef = useRef<Generator<InteractiveYield, void, string> | null>(null);
 
   const consoleEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -220,10 +220,8 @@ export function BashStudioApp() {
     setConsoleLines([]);
     setExitCode(null);
     setExecDuration(null);
-    setCollectedInputs({});
     setCurrentTyping("");
-    setCurrentReadIdx(0);
-    setPendingReads([]);
+    genRef.current = null;
   };
 
   const handleTemplateChange = (key: string) => {
@@ -235,41 +233,73 @@ export function BashStudioApp() {
     }
   };
 
+  /**
+   * Advance the generator until it hits a `read` (needs user input) or finishes.
+   * Pass `inputValue` when resuming after a read.
+   */
+  const advanceGenerator = (inputValue?: string) => {
+    const gen = genRef.current;
+    if (!gen) return;
+
+    const newLines: ConsoleLine[] = [];
+
+    let result = inputValue !== undefined ? gen.next(inputValue) : gen.next();
+
+    while (!result.done) {
+      const yld = result.value;
+
+      if (yld.type === "output") {
+        newLines.push({ kind: "output", text: yld.line });
+        result = gen.next();
+        continue;
+      }
+
+      if (yld.type === "stderr") {
+        newLines.push({ kind: "error", text: yld.line });
+        result = gen.next();
+        continue;
+      }
+
+      if (yld.type === "read") {
+        // Flush collected output first, then pause for input
+        if (yld.prompt) newLines.push({ kind: "prompt", text: yld.prompt });
+        setConsoleLines((prev) => [...prev, ...newLines]);
+        setPhase("waiting_input");
+        return;  // stop — wait for user to type
+      }
+
+      if (yld.type === "done") {
+        newLines.push({ kind: "info", text: "-----------------------------------------" });
+        newLines.push({ kind: "info", text: `Process exited with code ${yld.exitCode}  [${yld.durationMs}ms]` });
+        setConsoleLines((prev) => [...prev, ...newLines]);
+        setExitCode(yld.exitCode);
+        setExecDuration(yld.durationMs);
+        setPhase("done");
+        return;
+      }
+
+      result = gen.next();
+    }
+
+    // Generator exhausted
+    if (newLines.length) setConsoleLines((prev) => [...prev, ...newLines]);
+    setPhase("done");
+  };
+
   const handleRunScript = () => {
     resetConsole();
     setPhase("executing");
-    const reads = detectReadVariables(code);
+
+    // Create generator and store in ref
+    genRef.current = executeBashScriptInteractive(code, customArgs);
 
     setConsoleLines([
       { kind: "info", text: "ShellSpace Linux  -  script.sh" },
       { kind: "info", text: "-----------------------------------------" },
     ]);
 
-    setTimeout(() => {
-      if (reads.length === 0) {
-        // No read commands - run directly
-        const result = executeBashScript(code, customArgs, {});
-        const outLines: ConsoleLine[] = result.stdout
-          .split("\n")
-          .map((t) => ({ kind: "output" as const, text: t }));
-        if (result.stderr) {
-          result.stderr.split("\n").forEach((t) => outLines.push({ kind: "error", text: t }));
-        }
-        outLines.push({ kind: "info", text: "-----------------------------------------" });
-        outLines.push({ kind: "info", text: `Process exited with code ${result.exitCode}  [${result.durationMs}ms]` });
-        setConsoleLines((prev) => [...prev, ...outLines]);
-        setExitCode(result.exitCode);
-        setExecDuration(result.durationMs);
-        setPhase("done");
-      } else {
-        // Interactive: collect inputs one by one in the console
-        setPendingReads(reads);
-        setCurrentReadIdx(0);
-        setCollectedInputs({});
-        setConsoleLines((prev) => [...prev, { kind: "prompt", text: reads[0].prompt }]);
-        setPhase("waiting_input");
-      }
-    }, 200);
+    // Start advancing after short delay for UI to paint
+    setTimeout(() => advanceGenerator(), 100);
   };
 
   const handleConsoleSubmit = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -277,36 +307,14 @@ export function BashStudioApp() {
     e.preventDefault();
 
     const value = currentTyping;
-    const varName = pendingReads[currentReadIdx].varName;
-    const newInputs = { ...collectedInputs, [varName]: value };
-    setCollectedInputs(newInputs);
-    setConsoleLines((prev) => [...prev, { kind: "userInput", text: value }]);
     setCurrentTyping("");
+    setPhase("executing");
 
-    const nextIdx = currentReadIdx + 1;
+    // Echo what user typed in console
+    setConsoleLines((prev) => [...prev, { kind: "userInput", text: value }]);
 
-    if (nextIdx < pendingReads.length) {
-      setCurrentReadIdx(nextIdx);
-      setConsoleLines((prev) => [...prev, { kind: "prompt", text: pendingReads[nextIdx].prompt }]);
-    } else {
-      // All inputs collected - execute
-      setPhase("executing");
-      setTimeout(() => {
-        const result = executeBashScript(code, customArgs, newInputs);
-        const outLines: ConsoleLine[] = [];
-        outLines.push({ kind: "info", text: "-----------------------------------------" });
-        result.stdout.split("\n").forEach((t) => outLines.push({ kind: "output", text: t }));
-        if (result.stderr) {
-          result.stderr.split("\n").forEach((t) => outLines.push({ kind: "error", text: t }));
-        }
-        outLines.push({ kind: "info", text: "-----------------------------------------" });
-        outLines.push({ kind: "info", text: `Process exited with code ${result.exitCode}  [${result.durationMs}ms]` });
-        setConsoleLines((prev) => [...prev, ...outLines]);
-        setExitCode(result.exitCode);
-        setExecDuration(result.durationMs);
-        setPhase("done");
-      }, 150);
-    }
+    // Resume generator with user's input
+    setTimeout(() => advanceGenerator(value), 50);
   };
 
   const handleSaveToWorkspace = () => {

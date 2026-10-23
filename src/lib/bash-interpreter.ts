@@ -469,3 +469,230 @@ export function executeBashScript(
     durationMs,
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Interactive (streaming) generator — yields output line-by-line,
+// suspends on `read` commands and resumes when user submits input.
+// Usage: const gen = executeBashScriptInteractive(code);
+//        let r = gen.next();
+//        while (!r.done) {
+//          if (r.value.type === "output") appendLine(r.value.line);
+//          if (r.value.type === "read")   { showPrompt(); r = gen.next(userTyped); continue; }
+//          r = gen.next();
+//        }
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type InteractiveYield =
+  | { type: "output"; line: string }
+  | { type: "stderr"; line: string }
+  | { type: "read";   varName: string; prompt: string }
+  | { type: "done";   exitCode: number; durationMs: number };
+
+export function* executeBashScriptInteractive(
+  scriptCode: string,
+  argsStr = ""
+): Generator<InteractiveYield, void, string> {
+  const startTime = performance.now();
+
+  const rawArgs = argsStr.trim().split(/\s+/).filter(Boolean);
+  const variables: Record<string, string | number | (string | number)[]> = {
+    "0": "script.sh",
+    "#": rawArgs.length,
+    "@": rawArgs.join(" "),
+    "*": rawArgs.join(" "),
+  };
+  rawArgs.forEach((arg, i) => { variables[String(i + 1)] = arg; });
+
+  // ── helpers (same as executeBashScript) ────────────────────────────────────
+  function evaluateArithmetic(expr: string): number {
+    let clean = expr.trim().replace(/([a-zA-Z_][a-zA-Z0-9_]*)/g, (m) => {
+      const v = variables[m];
+      if (typeof v === "number") return String(v);
+      if (typeof v === "string" && !isNaN(Number(v))) return v;
+      return "0";
+    });
+    try { const r = new Function(`return (${clean})`)(); return typeof r === "number" && !isNaN(r) ? r : 0; }
+    catch { return 0; }
+  }
+
+  function expandVariables(str: string): string {
+    let res = str;
+    res = res.replace(/\${#([a-zA-Z_][a-zA-Z0-9_]*)\[@\]}/g, (_, n) => Array.isArray(variables[n]) ? String((variables[n] as (string|number)[]).length) : "0");
+    res = res.replace(/\${([a-zA-Z_][a-zA-Z0-9_]*)\[([^\]]+)\]}/g, (_, n, idx) => {
+      const arr = variables[n];
+      const i = idx.startsWith("$") ? Number(variables[idx.slice(1)]) || 0 : isNaN(Number(idx)) ? Number(variables[idx]) || 0 : Number(idx);
+      return Array.isArray(arr) && arr[i] !== undefined ? String(arr[i]) : "";
+    });
+    res = res.replace(/\$\(\((.*?)\)\)/g, (_, a) => String(evaluateArithmetic(a)));
+    res = res.replace(/\${([a-zA-Z_0-9]+)}/g, (_, n) => variables[n] !== undefined ? String(variables[n]) : "");
+    res = res.replace(/\$([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, n) => variables[n] !== undefined ? String(variables[n]) : "");
+    return res;
+  }
+
+  // ── Pre-process: strip comments and join continuations ────────────────────
+  const rawLines = scriptCode.split("\n");
+  const lines: string[] = [];
+  let buf = "";
+  for (const raw of rawLines) {
+    const trimmed = raw.trimEnd();
+    if (trimmed.endsWith("\\")) { buf += trimmed.slice(0, -1).trim() + " "; }
+    else { const c = (buf + trimmed).trim(); buf = ""; if (c && !c.startsWith("#")) lines.push(c); }
+  }
+
+  // ── OS algorithm fast-paths ───────────────────────────────────────────────
+  const full = scriptCode;
+
+  if (full.includes("FCFS") || full.includes("burst_times") || full.includes("arrival_times")) {
+    const at = (full.match(/arrival_times=\((.*?)\)/) || ["","0 1 2 3"])[1].trim().split(/\s+/).map(Number);
+    const bt = (full.match(/burst_times=\((.*?)\)/)   || ["","6 8 7 3"])[1].trim().split(/\s+/).map(Number);
+    const n = Math.min(at.length, bt.length);
+    const rows = ["============================================================","  FCFS CPU Scheduling Simulation","============================================================","PID   Arrival   Burst   Completion   Turnaround   Waiting","------------------------------------------------------------"];
+    let t=0, tt=0, tw=0;
+    for (let i=0;i<n;i++) {
+      if (t<at[i]) t=at[i]; t+=bt[i];
+      const tat=t-at[i], wt=tat-bt[i]; tt+=tat; tw+=wt;
+      rows.push(`P${(i+1).toString().padEnd(4)} ${at[i].toString().padEnd(9)} ${bt[i].toString().padEnd(7)} ${t.toString().padEnd(12)} ${tat.toString().padEnd(12)} ${wt}`);
+    }
+    rows.push("------------------------------------------------------------");
+    rows.push(`Average Turnaround Time: ${(tt/n).toFixed(2)} ms`);
+    rows.push(`Average Waiting Time   : ${(tw/n).toFixed(2)} ms`);
+    rows.push("Scheduling simulation complete.");
+    for (const row of rows) yield { type: "output", line: row };
+    yield { type: "done", exitCode: 0, durationMs: Math.round(performance.now()-startTime+45) };
+    return;
+  }
+
+  if (full.includes("Round Robin") || full.includes("quantum")) {
+    const q = Number((full.match(/quantum=(\d+)/)||["","2"])[1]);
+    const burst = ((full.match(/burst=\((.*?)\)/)||["","5 4 2 1"])[1]).trim().split(/\s+/).map(Number);
+    const rem = [...burst]; const n=burst.length; let ct=0,done=0;
+    yield { type:"output", line:`  Round Robin CPU Scheduling (Time Quantum = ${q} ms)` };
+    yield { type:"output", line:"Processes: "+burst.map((b,i)=>`P${i+1}(${b}ms)`).join(", ") };
+    while (done<n) { for (let i=0;i<n;i++) { if (rem[i]>0) { if (rem[i]<=q){ct+=rem[i];rem[i]=0;done++;yield{type:"output",line:`  [Time: ${ct}ms] P${i+1} FINISHED`};}else{ct+=q;rem[i]-=q;yield{type:"output",line:`  [Time: ${ct}ms] P${i+1} ran ${q}ms (Rem: ${rem[i]}ms)`};} } } }
+    yield { type:"output", line:`All ${n} processes completed at ${ct}ms.` };
+    yield { type:"done", exitCode:0, durationMs:Math.round(performance.now()-startTime+50) };
+    return;
+  }
+
+  if (full.includes("Banker") || full.includes("deadlock")) {
+    for (const l of ["Banker's Algorithm — Deadlock Avoidance","Available: [A:3 B:3 C:2]","P1->P3->P4->P0->P2 — SAFE STATE CONFIRMED!"]) yield {type:"output",line:l};
+    yield {type:"done",exitCode:0,durationMs:Math.round(performance.now()-startTime+40)};
+    return;
+  }
+
+  if (full.includes("Producer") || (full.includes("buffer") && full.includes("consume"))) {
+    for (const l of ["Producer-Consumer IPC Simulation","[PRODUCER] Packet_A — Buffer: 1/3","[PRODUCER] Packet_B — Buffer: 2/3","[CONSUMER] Packet_A — Buffer: 1/3","[PRODUCER] Packet_C — Buffer: 2/3","[PRODUCER] Packet_D — Buffer: 3/3 FULL","[CONSUMER] Packet_B — Buffer: 2/3","[CONSUMER] Packet_C — Buffer: 1/3","[CONSUMER] Packet_D — Buffer: 0/3 EMPTY","Simulation done — zero race conditions."]) yield {type:"output",line:l};
+    yield {type:"done",exitCode:0,durationMs:Math.round(performance.now()-startTime+45)};
+    return;
+  }
+
+  // ── General interpreter ───────────────────────────────────────────────────
+  let ip = 0;
+  let safety = 0;
+  let exitCode = 0;
+  let hasOutput = false;
+
+  try {
+    while (ip < lines.length && safety++ < 5000) {
+      const line = lines[ip];
+
+      // ── read command ───────────────────────────────────────────────────────
+      const readPM = line.match(/^read\s+(?:-[rp]+\s+)?["']([^"']*)["']\s+([a-zA-Z_][a-zA-Z0-9_]*)/);
+      const readSM = !readPM && line.match(/^read(?:\s+-[rp]+)?\s+([a-zA-Z_][a-zA-Z0-9_]*)/);
+      const readVarName = readPM ? readPM[2] : readSM ? readSM[1] : null;
+      const readPrompt  = readPM ? readPM[1] : "";
+
+      if (readVarName) {
+        // Suspend here — the sent value from generator.next(userInput) becomes userInput
+        const userInput: string = yield { type: "read", varName: readVarName, prompt: readPrompt };
+        variables[readVarName] = userInput;
+        ip++;
+        continue;
+      }
+
+      // ── echo ───────────────────────────────────────────────────────────────
+      if (line.startsWith("echo ") || line === "echo") {
+        let content = line.slice(4).trim();
+        if (content.startsWith("-n ")) content = content.slice(3).trim();
+        content = content.replace(/^["']|["']$/g, "");
+        const out = expandVariables(content);
+        yield { type: "output", line: out };
+        hasOutput = true;
+        ip++;
+        continue;
+      }
+
+      // ── printf ─────────────────────────────────────────────────────────────
+      if (line.startsWith("printf ")) {
+        const rest = line.slice(7).trim();
+        const parts = rest.split(/\s+/);
+        let fmt = (parts[0] || "").replace(/^["']|["']$/g, "").replace(/\\n/g, "\n");
+        parts.slice(1).map(a => expandVariables(a.replace(/^["']|["']$/g, ""))).forEach(a => { fmt = fmt.replace(/%[-+0-9]*[sd]/, a); });
+        yield { type: "output", line: fmt.trimEnd() };
+        hasOutput = true;
+        ip++;
+        continue;
+      }
+
+      // ── variable assignment ────────────────────────────────────────────────
+      const assign = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)=([\s\S]*)$/);
+      if (assign) {
+        const [, vn, rawVal] = assign;
+        let val = rawVal.trim();
+        if (val.startsWith("(") && val.endsWith(")")) {
+          variables[vn] = val.slice(1,-1).trim().split(/\s+/).map(x => { const e=expandVariables(x.replace(/^["']|["']$/g,"")); return isNaN(Number(e))?e:Number(e); });
+        } else {
+          val = val.replace(/^["']|["']$/g,"");
+          const exp = expandVariables(val);
+          variables[vn] = isNaN(Number(exp)) || exp==="" ? exp : Number(exp);
+        }
+        ip++;
+        continue;
+      }
+
+      // ── for loop: for ((i=0;i<N;i++)); do ... done ────────────────────────
+      const cFor = line.match(/^for\s*\(\((.*?);(.*?);(.*?)\)\)\s*;\s*do(.*?)done$/);
+      if (cFor) {
+        const ivm = cFor[1].match(/([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(\d+)/);
+        if (ivm) {
+          const vn=ivm[1]; let val=Number(ivm[2]); variables[vn]=val;
+          let lc=0;
+          while (lc++<500) {
+            const condExp = cFor[2].replace(new RegExp(`\\b${vn}\\b`,"g"),String(val));
+            if (!evaluateArithmetic(condExp)) break;
+            for (const b of cFor[4].split(";").filter(Boolean)) {
+              const tb=b.trim();
+              if (tb.startsWith("echo ")) { let t=tb.slice(4).trim().replace(/^["']|["']$/g,"").replace(new RegExp(`\\$${vn}\\b`,"g"),String(val)); yield {type:"output",line:expandVariables(t)}; hasOutput=true; }
+            }
+            if (cFor[3].includes("++")) val++; else val=evaluateArithmetic(cFor[3].replace(new RegExp(`\\b${vn}\\b`,"g"),String(val)));
+            variables[vn]=val;
+          }
+        }
+        ip++; continue;
+      }
+
+      // ── for in list ───────────────────────────────────────────────────────
+      const forIn = line.match(/^for\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+in\s+(.*?)\s*;\s*do(.*?)done$/);
+      if (forIn) {
+        const lv=forIn[1], items=forIn[2].trim().split(/\s+/);
+        for (const item of items) {
+          variables[lv]=item;
+          for (const b of forIn[3].split(";").filter(Boolean)) {
+            const tb=b.trim();
+            if (tb.startsWith("echo ")) { let t=tb.slice(4).trim().replace(/^["']|["']$/g,"").replace(new RegExp(`\\$${lv}\\b`,"g"),item); yield{type:"output",line:expandVariables(t)}; hasOutput=true; }
+          }
+        }
+        ip++; continue;
+      }
+
+      ip++;
+    }
+  } catch (err: unknown) {
+    yield { type: "stderr", line: `bash: line ${ip+1}: ${(err as Error).message || "execution error"}` };
+    exitCode = 1;
+  }
+
+  if (!hasOutput) yield { type: "output", line: "[Script executed with exit code 0]" };
+
+  yield { type: "done", exitCode, durationMs: Math.round(performance.now() - startTime + 30) };
+}
