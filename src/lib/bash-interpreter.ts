@@ -117,6 +117,55 @@ export function executeBashScript(
     return rest.replace(/;\s*then$/, "").replace(/\s+then$/, "").trim();
   }
 
+  function findMatchingDone(startIp: number, allLines: string[]): number {
+    let depth = 0;
+    for (let i = startIp; i < allLines.length; i++) {
+      const l = allLines[i];
+      if (l.startsWith("for ") || l.startsWith("for(") || l.startsWith("while ") || l.startsWith("while(") || l.startsWith("until ")) {
+        depth++;
+      } else if (l === "done" || l.startsWith("done ") || l.startsWith("done;")) {
+        depth--;
+        if (depth === 0) return i;
+      }
+    }
+    return -1;
+  }
+
+  function evaluateArithmeticStatement(expr: string) {
+    const incMatch = expr.match(/^(\+\+|)([a-zA-Z_][a-zA-Z0-9_]*)(\+\+|)$/);
+    if (incMatch && (incMatch[1] || incMatch[3])) {
+      const vn = incMatch[2];
+      variables[vn] = (Number(variables[vn]) || 0) + 1;
+      return;
+    }
+    const decMatch = expr.match(/^(--|)([a-zA-Z_][a-zA-Z0-9_]*)(--|)$/);
+    if (decMatch && (decMatch[1] || decMatch[3])) {
+      const vn = decMatch[2];
+      variables[vn] = (Number(variables[vn]) || 0) - 1;
+      return;
+    }
+    const compoundMatch = expr.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*([\+\-\*\/%]=)\s*(.*)$/);
+    if (compoundMatch) {
+      const vn = compoundMatch[1];
+      const op = compoundMatch[2][0];
+      const val = evaluateArithmetic(compoundMatch[3]);
+      const curr = Number(variables[vn]) || 0;
+      if (op === "+") variables[vn] = curr + val;
+      else if (op === "-") variables[vn] = curr - val;
+      else if (op === "*") variables[vn] = curr * val;
+      else if (op === "/") variables[vn] = val !== 0 ? Math.floor(curr / val) : 0;
+      else if (op === "%") variables[vn] = val !== 0 ? curr % val : 0;
+      return;
+    }
+    const assignArith = expr.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.*)$/);
+    if (assignArith) {
+      const vn = assignArith[1];
+      variables[vn] = evaluateArithmetic(assignArith[2]);
+      return;
+    }
+    evaluateArithmetic(expr);
+  }
+
   // Expand variables in string: $VAR, ${VAR}, $((expr)), ${#arr[@]}
   function expandVariables(str: string): string {
     let res = str;
@@ -347,6 +396,19 @@ export function executeBashScript(
   }
   const ifStack: IfFrame[] = [];
 
+  interface LoopFrame {
+    type: "c_for" | "for_in" | "while" | "until";
+    headerIp: number;
+    doneIp: number;
+    stepExpr?: string;
+    condExpr?: string;
+    loopVar?: string;
+    items?: string[];
+    index?: number;
+    condStr?: string;
+  }
+  const loopStack: LoopFrame[] = [];
+
   function isCurrentlyExecuting(): boolean {
     if (ifStack.length === 0) return true;
     return ifStack[ifStack.length - 1].executing;
@@ -500,71 +562,186 @@ export function executeBashScript(
         continue;
       }
 
-      // Simple for loop: for ((i=0; i<N; i++))
-      const cForMatch = line.match(/^for\s*\(\((.*?);(.*?);(.*?)\)\)\s*;\s*do(.*?)done$/);
-      if (cForMatch) {
-        const init = cForMatch[1];
-        const cond = cForMatch[2];
-        const step = cForMatch[3];
-        const body = cForMatch[4].trim();
+      // ── C-style for loop: for (( init; cond; step )) ──────────────────────
+      const cForStart = line.match(/^for\s*\(\(\s*(.*?)\s*;\s*(.*?)\s*;\s*(.*?)\s*\)\)(?:\s*;?\s*do)?$/);
+      if (cForStart) {
+        const top = loopStack[loopStack.length - 1];
+        if (top && top.headerIp === ip) {
+          const condOk = evalCondition(`(( ${top.condExpr} ))`);
+          if (!condOk) {
+            loopStack.pop();
+            ip = top.doneIp + 1;
+            continue;
+          }
+          ip++;
+          continue;
+        }
 
-        // Execute init
-        const iVarMatch = init.match(/([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(\d+)/);
-        if (iVarMatch) {
-          const varName = iVarMatch[1];
-          let val = Number(iVarMatch[2]);
-          variables[varName] = val;
+        const doneIp = findMatchingDone(ip, lines);
+        if (doneIp === -1) { ip++; continue; }
 
-          let loopCount = 0;
-          while (loopCount++ < 500) {
-            // Check condition e.g. i < 8
-            const condExp = cond.replace(new RegExp(`\\b${varName}\\b`, "g"), String(val));
-            const shouldRun = evaluateArithmetic(condExp);
-            if (!shouldRun) break;
+        const initExpr = cForStart[1].trim();
+        const condExpr = cForStart[2].trim();
+        const stepExpr = cForStart[3].trim();
 
-            // Execute body
-            const bodyLines = body.split(";").filter(Boolean);
-            for (const bLine of bodyLines) {
-              const trimmedB = bLine.trim();
-              if (trimmedB.startsWith("echo ")) {
-                let txt = trimmedB.slice(4).trim().replace(/^["']|["']$/g, "");
-                txt = txt.replace(new RegExp(`\\$${varName}\\b`, "g"), String(val));
-                stdoutLines.push(expandVariables(txt));
-              }
-            }
+        if (initExpr) evaluateArithmeticStatement(initExpr);
+        const condOk = evalCondition(`(( ${condExpr} ))`);
+        if (!condOk) {
+          ip = doneIp + 1;
+          continue;
+        }
 
-            // Step e.g. i++ or i=i+1
-            if (step.includes("++")) {
-              val++;
+        loopStack.push({ type: "c_for", headerIp: ip, doneIp, condExpr, stepExpr });
+        ip++;
+        continue;
+      }
+
+      // ── for .. in list: for var in item1 item2 ... ────────────────────────
+      const forInStart = line.match(/^for\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+in\s+(.*?)(?:\s*;?\s*do)?$/);
+      if (forInStart) {
+        const top = loopStack[loopStack.length - 1];
+        if (top && top.headerIp === ip) { ip++; continue; }
+
+        const doneIp = findMatchingDone(ip, lines);
+        if (doneIp === -1) { ip++; continue; }
+
+        const loopVar = forInStart[1];
+        const rawItemsStr = expandVariables(forInStart[2].trim());
+        const items = rawItemsStr.split(/\s+/).filter(Boolean);
+
+        if (items.length === 0) {
+          ip = doneIp + 1;
+          continue;
+        }
+
+        variables[loopVar] = items[0];
+        loopStack.push({ type: "for_in", headerIp: ip, doneIp, loopVar, items, index: 0 });
+        ip++;
+        continue;
+      }
+
+      // ── while loop: while (( cond )) or while [ cond ] ────────────────────
+      const whileStart = line.match(/^while\s+(.*?)(?:\s*;?\s*do)?$/);
+      if (whileStart) {
+        const top = loopStack[loopStack.length - 1];
+        const condStr = top && top.headerIp === ip ? top.condStr! : whileStart[1].trim();
+        const condOk = evalCondition(condStr);
+        if (top && top.headerIp === ip) {
+          if (!condOk) {
+            loopStack.pop();
+            ip = top.doneIp + 1;
+            continue;
+          }
+          ip++;
+          continue;
+        }
+
+        const doneIp = findMatchingDone(ip, lines);
+        if (doneIp === -1) { ip++; continue; }
+
+        if (!condOk) {
+          ip = doneIp + 1;
+          continue;
+        }
+
+        loopStack.push({ type: "while", headerIp: ip, doneIp, condStr });
+        ip++;
+        continue;
+      }
+
+      // ── until loop: until (( cond )) ──────────────────────────────────────
+      const untilStart = line.match(/^until\s+(.*?)(?:\s*;?\s*do)?$/);
+      if (untilStart) {
+        const top = loopStack[loopStack.length - 1];
+        const condStr = top && top.headerIp === ip ? top.condStr! : untilStart[1].trim();
+        const condOk = !evalCondition(condStr);
+        if (top && top.headerIp === ip) {
+          if (!condOk) {
+            loopStack.pop();
+            ip = top.doneIp + 1;
+            continue;
+          }
+          ip++;
+          continue;
+        }
+
+        const doneIp = findMatchingDone(ip, lines);
+        if (doneIp === -1) { ip++; continue; }
+
+        if (!condOk) {
+          ip = doneIp + 1;
+          continue;
+        }
+
+        loopStack.push({ type: "until", headerIp: ip, doneIp, condStr });
+        ip++;
+        continue;
+      }
+
+      // ── do delimiter ──────────────────────────────────────────────────────
+      if (line === "do" || line.startsWith("do ") || line.startsWith("do;")) {
+        ip++;
+        continue;
+      }
+
+      // ── done (loop end jump) ──────────────────────────────────────────────
+      if (line === "done" || line.startsWith("done ") || line.startsWith("done;")) {
+        const top = loopStack[loopStack.length - 1];
+        if (top) {
+          if (top.type === "c_for") {
+            if (top.stepExpr) evaluateArithmeticStatement(top.stepExpr);
+            ip = top.headerIp;
+            continue;
+          } else if (top.type === "for_in") {
+            top.index!++;
+            if (top.index! < top.items!.length) {
+              variables[top.loopVar!] = top.items![top.index!];
+              ip = top.headerIp;
+              continue;
             } else {
-              val = evaluateArithmetic(step.replace(new RegExp(`\\b${varName}\\b`, "g"), String(val)));
+              loopStack.pop();
+              ip++;
+              continue;
             }
-            variables[varName] = val;
+          } else if (top.type === "while" || top.type === "until") {
+            ip = top.headerIp;
+            continue;
           }
         }
         ip++;
         continue;
       }
 
-      // For in list: for x in a b c; do ... done
-      const forInMatch = line.match(/^for\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+in\s+(.*?)\s*;\s*do(.*?)done$/);
-      if (forInMatch) {
-        const loopVar = forInMatch[1];
-        const listItems = forInMatch[2].trim().split(/\s+/);
-        const body = forInMatch[3].trim();
-
-        for (const item of listItems) {
-          variables[loopVar] = item;
-          const bodyLines = body.split(";").filter(Boolean);
-          for (const bLine of bodyLines) {
-            const trimmedB = bLine.trim();
-            if (trimmedB.startsWith("echo ")) {
-              let txt = trimmedB.slice(4).trim().replace(/^["']|["']$/g, "");
-              txt = txt.replace(new RegExp(`\\$${loopVar}\\b`, "g"), item);
-              stdoutLines.push(expandVariables(txt));
-            }
-          }
+      // ── break & continue ──────────────────────────────────────────────────
+      if (line === "break" || line.startsWith("break ") || line.startsWith("break;")) {
+        if (loopStack.length > 0) {
+          const top = loopStack.pop()!;
+          ip = top.doneIp + 1;
+          continue;
         }
+        ip++;
+        continue;
+      }
+      if (line === "continue" || line.startsWith("continue ") || line.startsWith("continue;")) {
+        if (loopStack.length > 0) {
+          const top = loopStack[loopStack.length - 1];
+          ip = top.doneIp;
+          continue;
+        }
+        ip++;
+        continue;
+      }
+
+      // ── standalone arithmetic statement: (( i++ )) or (( sum += x )) ──────
+      const standaloneArith = line.match(/^\(\(\s*(.*?)\s*\)\)$/);
+      if (standaloneArith) {
+        evaluateArithmeticStatement(standaloneArith[1]);
+        ip++;
+        continue;
+      }
+      if (line.startsWith("let ")) {
+        const expr = line.slice(4).trim().replace(/^["']|["']$/g, "");
+        evaluateArithmeticStatement(expr);
         ip++;
         continue;
       }
@@ -681,6 +858,55 @@ export function* executeBashScriptInteractive(
     return rest.replace(/;\s*then$/, "").replace(/\s+then$/, "").trim();
   }
 
+  function findMatchingDone(startIp: number, allLines: string[]): number {
+    let depth = 0;
+    for (let i = startIp; i < allLines.length; i++) {
+      const l = allLines[i];
+      if (l.startsWith("for ") || l.startsWith("for(") || l.startsWith("while ") || l.startsWith("while(") || l.startsWith("until ")) {
+        depth++;
+      } else if (l === "done" || l.startsWith("done ") || l.startsWith("done;")) {
+        depth--;
+        if (depth === 0) return i;
+      }
+    }
+    return -1;
+  }
+
+  function evaluateArithmeticStatement(expr: string) {
+    const incMatch = expr.match(/^(\+\+|)([a-zA-Z_][a-zA-Z0-9_]*)(\+\+|)$/);
+    if (incMatch && (incMatch[1] || incMatch[3])) {
+      const vn = incMatch[2];
+      variables[vn] = (Number(variables[vn]) || 0) + 1;
+      return;
+    }
+    const decMatch = expr.match(/^(--|)([a-zA-Z_][a-zA-Z0-9_]*)(--|)$/);
+    if (decMatch && (decMatch[1] || decMatch[3])) {
+      const vn = decMatch[2];
+      variables[vn] = (Number(variables[vn]) || 0) - 1;
+      return;
+    }
+    const compoundMatch = expr.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*([\+\-\*\/%]=)\s*(.*)$/);
+    if (compoundMatch) {
+      const vn = compoundMatch[1];
+      const op = compoundMatch[2][0];
+      const val = evaluateArithmetic(compoundMatch[3]);
+      const curr = Number(variables[vn]) || 0;
+      if (op === "+") variables[vn] = curr + val;
+      else if (op === "-") variables[vn] = curr - val;
+      else if (op === "*") variables[vn] = curr * val;
+      else if (op === "/") variables[vn] = val !== 0 ? Math.floor(curr / val) : 0;
+      else if (op === "%") variables[vn] = val !== 0 ? curr % val : 0;
+      return;
+    }
+    const assignArith = expr.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.*)$/);
+    if (assignArith) {
+      const vn = assignArith[1];
+      variables[vn] = evaluateArithmetic(assignArith[2]);
+      return;
+    }
+    evaluateArithmetic(expr);
+  }
+
   function expandVariables(str: string): string {
     let res = str;
     res = res.replace(/\${#([a-zA-Z_][a-zA-Z0-9_]*)\[@\]}/g, (_, n) => Array.isArray(variables[n]) ? String((variables[n] as (string|number)[]).length) : "0");
@@ -764,6 +990,19 @@ export function* executeBashScriptInteractive(
     executing: boolean;
   }
   const ifStack: IfFrame[] = [];
+
+  interface LoopFrame {
+    type: "c_for" | "for_in" | "while" | "until";
+    headerIp: number;
+    doneIp: number;
+    stepExpr?: string;
+    condExpr?: string;
+    loopVar?: string;
+    items?: string[];
+    index?: number;
+    condStr?: string;
+  }
+  const loopStack: LoopFrame[] = [];
 
   function isCurrentlyExecuting(): boolean {
     if (ifStack.length === 0) return true;
@@ -888,39 +1127,188 @@ export function* executeBashScriptInteractive(
         continue;
       }
 
-      // ── for loop: for ((i=0;i<N;i++)); do ... done ────────────────────────
-      const cFor = line.match(/^for\s*\(\((.*?);(.*?);(.*?)\)\)\s*;\s*do(.*?)done$/);
-      if (cFor) {
-        const ivm = cFor[1].match(/([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(\d+)/);
-        if (ivm) {
-          const vn=ivm[1]; let val=Number(ivm[2]); variables[vn]=val;
-          let lc=0;
-          while (lc++<500) {
-            const condExp = cFor[2].replace(new RegExp(`\\b${vn}\\b`,"g"),String(val));
-            if (!evaluateArithmetic(condExp)) break;
-            for (const b of cFor[4].split(";").filter(Boolean)) {
-              const tb=b.trim();
-              if (tb.startsWith("echo ")) { let t=tb.slice(4).trim().replace(/^["']|["']$/g,"").replace(new RegExp(`\\$${vn}\\b`,"g"),String(val)); yield {type:"output",line:expandVariables(t)}; hasOutput=true; }
-            }
-            if (cFor[3].includes("++")) val++; else val=evaluateArithmetic(cFor[3].replace(new RegExp(`\\b${vn}\\b`,"g"),String(val)));
-            variables[vn]=val;
+      // ── C-style for loop: for (( init; cond; step )) ──────────────────────
+      const cForStart = line.match(/^for\s*\(\(\s*(.*?)\s*;\s*(.*?)\s*;\s*(.*?)\s*\)\)(?:\s*;?\s*do)?$/);
+      if (cForStart) {
+        const top = loopStack[loopStack.length - 1];
+        if (top && top.headerIp === ip) {
+          const condOk = evalCondition(`(( ${top.condExpr} ))`);
+          if (!condOk) {
+            loopStack.pop();
+            ip = top.doneIp + 1;
+            continue;
           }
+          ip++;
+          continue;
         }
-        ip++; continue;
+
+        const doneIp = findMatchingDone(ip, lines);
+        if (doneIp === -1) { ip++; continue; }
+
+        const initExpr = cForStart[1].trim();
+        const condExpr = cForStart[2].trim();
+        const stepExpr = cForStart[3].trim();
+
+        if (initExpr) evaluateArithmeticStatement(initExpr);
+        const condOk = evalCondition(`(( ${condExpr} ))`);
+        if (!condOk) {
+          ip = doneIp + 1;
+          continue;
+        }
+
+        loopStack.push({ type: "c_for", headerIp: ip, doneIp, condExpr, stepExpr });
+        ip++;
+        continue;
       }
 
-      // ── for in list ───────────────────────────────────────────────────────
-      const forIn = line.match(/^for\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+in\s+(.*?)\s*;\s*do(.*?)done$/);
-      if (forIn) {
-        const lv=forIn[1], items=forIn[2].trim().split(/\s+/);
-        for (const item of items) {
-          variables[lv]=item;
-          for (const b of forIn[3].split(";").filter(Boolean)) {
-            const tb=b.trim();
-            if (tb.startsWith("echo ")) { let t=tb.slice(4).trim().replace(/^["']|["']$/g,"").replace(new RegExp(`\\$${lv}\\b`,"g"),item); yield{type:"output",line:expandVariables(t)}; hasOutput=true; }
+      // ── for .. in list: for var in item1 item2 ... ────────────────────────
+      const forInStart = line.match(/^for\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+in\s+(.*?)(?:\s*;?\s*do)?$/);
+      if (forInStart) {
+        const top = loopStack[loopStack.length - 1];
+        if (top && top.headerIp === ip) { ip++; continue; }
+
+        const doneIp = findMatchingDone(ip, lines);
+        if (doneIp === -1) { ip++; continue; }
+
+        const loopVar = forInStart[1];
+        const rawItemsStr = expandVariables(forInStart[2].trim());
+        const items = rawItemsStr.split(/\s+/).filter(Boolean);
+
+        if (items.length === 0) {
+          ip = doneIp + 1;
+          continue;
+        }
+
+        variables[loopVar] = items[0];
+        loopStack.push({ type: "for_in", headerIp: ip, doneIp, loopVar, items, index: 0 });
+        ip++;
+        continue;
+      }
+
+      // ── while loop: while (( cond )) or while [ cond ] ────────────────────
+      const whileStart = line.match(/^while\s+(.*?)(?:\s*;?\s*do)?$/);
+      if (whileStart) {
+        const top = loopStack[loopStack.length - 1];
+        const condStr = top && top.headerIp === ip ? top.condStr! : whileStart[1].trim();
+        const condOk = evalCondition(condStr);
+        if (top && top.headerIp === ip) {
+          if (!condOk) {
+            loopStack.pop();
+            ip = top.doneIp + 1;
+            continue;
+          }
+          ip++;
+          continue;
+        }
+
+        const doneIp = findMatchingDone(ip, lines);
+        if (doneIp === -1) { ip++; continue; }
+
+        if (!condOk) {
+          ip = doneIp + 1;
+          continue;
+        }
+
+        loopStack.push({ type: "while", headerIp: ip, doneIp, condStr });
+        ip++;
+        continue;
+      }
+
+      // ── until loop: until (( cond )) ──────────────────────────────────────
+      const untilStart = line.match(/^until\s+(.*?)(?:\s*;?\s*do)?$/);
+      if (untilStart) {
+        const top = loopStack[loopStack.length - 1];
+        const condStr = top && top.headerIp === ip ? top.condStr! : untilStart[1].trim();
+        const condOk = !evalCondition(condStr);
+        if (top && top.headerIp === ip) {
+          if (!condOk) {
+            loopStack.pop();
+            ip = top.doneIp + 1;
+            continue;
+          }
+          ip++;
+          continue;
+        }
+
+        const doneIp = findMatchingDone(ip, lines);
+        if (doneIp === -1) { ip++; continue; }
+
+        if (!condOk) {
+          ip = doneIp + 1;
+          continue;
+        }
+
+        loopStack.push({ type: "until", headerIp: ip, doneIp, condStr });
+        ip++;
+        continue;
+      }
+
+      // ── do delimiter ──────────────────────────────────────────────────────
+      if (line === "do" || line.startsWith("do ") || line.startsWith("do;")) {
+        ip++;
+        continue;
+      }
+
+      // ── done (loop end jump) ──────────────────────────────────────────────
+      if (line === "done" || line.startsWith("done ") || line.startsWith("done;")) {
+        const top = loopStack[loopStack.length - 1];
+        if (top) {
+          if (top.type === "c_for") {
+            if (top.stepExpr) evaluateArithmeticStatement(top.stepExpr);
+            ip = top.headerIp;
+            continue;
+          } else if (top.type === "for_in") {
+            top.index!++;
+            if (top.index! < top.items!.length) {
+              variables[top.loopVar!] = top.items![top.index!];
+              ip = top.headerIp;
+              continue;
+            } else {
+              loopStack.pop();
+              ip++;
+              continue;
+            }
+          } else if (top.type === "while" || top.type === "until") {
+            ip = top.headerIp;
+            continue;
           }
         }
-        ip++; continue;
+        ip++;
+        continue;
+      }
+
+      // ── break & continue ──────────────────────────────────────────────────
+      if (line === "break" || line.startsWith("break ") || line.startsWith("break;")) {
+        if (loopStack.length > 0) {
+          const top = loopStack.pop()!;
+          ip = top.doneIp + 1;
+          continue;
+        }
+        ip++;
+        continue;
+      }
+      if (line === "continue" || line.startsWith("continue ") || line.startsWith("continue;")) {
+        if (loopStack.length > 0) {
+          const top = loopStack[loopStack.length - 1];
+          ip = top.doneIp;
+          continue;
+        }
+        ip++;
+        continue;
+      }
+
+      // ── standalone arithmetic statement: (( i++ )) or (( sum += x )) ──────
+      const standaloneArith = line.match(/^\(\(\s*(.*?)\s*\)\)$/);
+      if (standaloneArith) {
+        evaluateArithmeticStatement(standaloneArith[1]);
+        ip++;
+        continue;
+      }
+      if (line.startsWith("let ")) {
+        const expr = line.slice(4).trim().replace(/^["']|["']$/g, "");
+        evaluateArithmeticStatement(expr);
+        ip++;
+        continue;
       }
 
       ip++;
