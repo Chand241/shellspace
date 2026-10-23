@@ -451,25 +451,6 @@ export function FileManagerApp() {
               <span>/tmp</span>
             </button>
           </div>
-
-          {/* Reset FS button */}
-          <button
-            onClick={() => {
-              if (
-                confirm(
-                  "Reset entire lab filesystem to default? Any custom folders/files will be reset."
-                )
-              ) {
-                resetFS();
-                navigateTo(["home", "student", "workspace"]);
-                showStatus("Filesystem reset to default OS Lab state");
-              }
-            }}
-            className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors border border-dashed border-slate-300"
-          >
-            <RotateCcw size={12} />
-            <span>Reset Lab Files</span>
-          </button>
         </div>
 
         {/* Center: File List / Grid Table */}

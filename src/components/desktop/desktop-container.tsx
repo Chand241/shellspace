@@ -14,6 +14,8 @@ import { SystemInfoApp } from "@/components/desktop/apps/system-info-app";
 import { FileManagerApp } from "@/components/desktop/apps/file-manager-app";
 import { DesktopSettingsApp } from "@/components/desktop/apps/settings-app";
 import type { WindowInstance } from "@/types/desktop";
+import Link from "next/link";
+import { Home, LayoutDashboard } from "lucide-react";
 
 const WALLPAPER_CLASSES: Record<string, string> = {
   "wallpaper-mesh": "bg-gradient-to-tr from-sky-100 via-blue-50 to-indigo-100",
@@ -85,6 +87,27 @@ export function DesktopContainer({ user }: DesktopContainerProps) {
     >
       {/* Desktop Workspace Area */}
       <div className="relative flex-1 w-full h-[calc(100vh-48px)] overflow-hidden">
+        {/* Floating Back to Landing Page & Dashboard Bar */}
+        <div className="absolute top-3 right-4 z-40 flex items-center gap-2">
+          <Link
+            href="/"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-white/90 hover:bg-white text-slate-800 shadow-md border border-slate-200/90 backdrop-blur-md transition-all hover:scale-105 active:scale-95"
+            title="Go back to Landing Page"
+          >
+            <Home size={13} className="text-blue-600" />
+            <span>Landing Page</span>
+          </Link>
+
+          <Link
+            href="/student/dashboard"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-white/90 hover:bg-white text-slate-800 shadow-md border border-slate-200/90 backdrop-blur-md transition-all hover:scale-105 active:scale-95"
+            title="Go to Student Dashboard"
+          >
+            <LayoutDashboard size={13} className="text-emerald-600" />
+            <span>Dashboard</span>
+          </Link>
+        </div>
+
         {/* Desktop Icons */}
         <DesktopIcons />
 

@@ -19,7 +19,10 @@ import {
   LogOut,
   User,
   ExternalLink,
+  Home,
+  LayoutDashboard,
 } from "lucide-react";
+import Link from "next/link";
 
 interface StartMenuItem {
   appId: AppId;
@@ -198,6 +201,27 @@ export function DesktopStartMenu({ user }: StartMenuProps) {
               No matching applications found.
             </div>
           )}
+        </div>
+
+        {/* Quick Portal Navigation Links */}
+        <div className="px-3 py-2 bg-slate-100/70 border-t border-slate-200/60 flex items-center justify-between text-xs">
+          <Link
+            href="/"
+            onClick={() => setStartMenuOpen(false)}
+            className="flex items-center gap-1.5 text-slate-700 hover:text-blue-600 font-medium px-2 py-1 rounded-lg hover:bg-white transition-colors"
+          >
+            <Home size={13} className="text-blue-600" />
+            <span>Landing Page</span>
+          </Link>
+
+          <Link
+            href="/student/dashboard"
+            onClick={() => setStartMenuOpen(false)}
+            className="flex items-center gap-1.5 text-slate-700 hover:text-emerald-600 font-medium px-2 py-1 rounded-lg hover:bg-white transition-colors"
+          >
+            <LayoutDashboard size={13} className="text-emerald-600" />
+            <span>Dashboard</span>
+          </Link>
         </div>
 
         {/* User profile footer */}

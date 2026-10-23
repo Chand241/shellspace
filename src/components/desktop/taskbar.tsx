@@ -18,7 +18,9 @@ import {
   BookOpen,
   Calculator,
   HelpCircle,
+  Home,
 } from "lucide-react";
+import Link from "next/link";
 
 const APP_ICONS: Record<string, React.ElementType> = {
   terminal: Terminal,
@@ -138,6 +140,15 @@ export function DesktopTaskbar({ user }: TaskbarProps) {
 
       {/* Right: System Tray & Clock */}
       <div className="flex items-center gap-2 flex-shrink-0 ml-3">
+        {/* Return to Landing Page */}
+        <Link
+          href="/"
+          title="Return to Landing Page"
+          className="w-7 h-7 rounded flex items-center justify-center text-slate-600 hover:text-blue-600 hover:bg-slate-100 transition-colors"
+        >
+          <Home size={14} />
+        </Link>
+
         {/* Sound toggle */}
         <button
           onClick={toggleSound}
