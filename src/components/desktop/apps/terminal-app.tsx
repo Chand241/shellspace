@@ -7,11 +7,6 @@ import {
   formatPathDisplay,
   normalizePathParts,
 } from "@/lib/stores/vfs-store";
-import {
-  useCommandHistoryStore,
-  formatDateLabel,
-} from "@/lib/stores/command-history-store";
-import { Clock, Trash2, X, ChevronRight, Copy, Check } from "lucide-react";
 
 interface HistoryItem {
   id: string;
@@ -32,12 +27,6 @@ export function TerminalApp() {
     generateTree,
     listDirectory,
   } = useVFSStore();
-
-  const { commands: savedCommands, addCommand, getGroupedByDay, clearHistory: clearSavedHistory } =
-    useCommandHistoryStore();
-
-  const [showHistoryDrawer, setShowHistoryDrawer] = useState(false);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const [currentPath, setCurrentPath] = useState<string[]>([
     "home",
@@ -192,40 +181,20 @@ export function TerminalApp() {
         break;
 
       case "history":
-      case "history": {
-        const groups = getGroupedByDay();
-        const groupKeys = Object.keys(groups);
-
-        if (groupKeys.length === 0) {
-          outputNode = <div className="text-xs font-mono text-slate-400">No command history recorded yet.</div>;
-        } else {
-          let globalIdx = 1;
-          outputNode = (
-            <div className="text-xs font-mono space-y-2 py-1 select-text">
-              <div className="text-slate-400 text-[11px] pb-1 border-b border-slate-200">
-                # Bash Command History (Saved Day-wise in ~/.bash_history &amp; LocalStorage)
-              </div>
-              {groupKeys.map((dayLabel) => (
-                <div key={dayLabel} className="space-y-0.5">
-                  <div className="text-blue-600 font-bold text-[11px] mt-1.5 flex items-center gap-1.5">
-                    <span>─── [ {dayLabel} ]</span>
-                    <span className="text-slate-300">────────────────────────────────────────────</span>
-                  </div>
-                  {groups[dayLabel].map((entry) => (
-                    <div key={entry.id} className="flex items-center gap-2 text-slate-700 hover:bg-slate-50 py-0.5">
-                      <span className="inline-block w-6 text-slate-400 text-right">{globalIdx++}</span>
-                      <span className="text-slate-400 font-mono text-[10px]">[{entry.timeStr}]</span>
-                      <span className="text-slate-500 text-[11px] w-24 truncate">{entry.cwd}</span>
-                      <span className="font-semibold text-slate-900">{entry.command}</span>
-                    </div>
-                  ))}
+        outputNode = (
+          <div className="text-xs font-mono space-y-0.5">
+            {cmdHistory
+              .slice()
+              .reverse()
+              .map((h, i) => (
+                <div key={i} className="text-slate-600">
+                  <span className="inline-block w-8 text-slate-400">{i + 1}</span>
+                  {h}
                 </div>
               ))}
-            </div>
-          );
-        }
+          </div>
+        );
         break;
-      }
 
       case "tree": {
         const targetDir = args[0] || ".";
@@ -761,9 +730,23 @@ export function TerminalApp() {
       }
     }
 
-    // Save to persistent Day-wise command store and ~/.bash_history
-    addCommand(fullCmd, getPathString(currentPath));
+    // Save to VFS ~/.bash_history
     writeFile(".bash_history", ["home", "student"], `${fullCmd}\n`, true);
+
+    // Permanently log to Account Activity History (/student/history) - cannot be deleted
+    fetch("/api/activity", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "TERMINAL_COMMAND",
+        title: fullCmd,
+        description: `Executed in ${getPathString(currentPath)}`,
+        metadata: {
+          command: fullCmd,
+          cwd: getPathString(currentPath),
+        },
+      }),
+    }).catch(() => {});
 
     setHistory((prev) => [
       ...prev,
@@ -811,186 +794,44 @@ export function TerminalApp() {
     }
   };
 
-  const dayGroups = getGroupedByDay();
-  const dayLabels = Object.keys(dayGroups);
-
-  const copyToClipboard = (cmdText: string, id: string) => {
-    navigator.clipboard?.writeText(cmdText);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
-  };
-
   return (
-    <div className="flex-1 flex flex-col bg-white overflow-hidden relative">
-      {/* Terminal Top Control Bar */}
-      <div className="h-8 px-3 bg-slate-100 border-b border-slate-200 flex items-center justify-between text-xs select-none">
-        <div className="flex items-center gap-2">
-          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-          <span className="font-mono text-[11px] text-slate-600 font-semibold">
-            bash — student@shellspace: {getPathString(currentPath)}
-          </span>
+    <div
+      onClick={() => inputRef.current?.focus()}
+      className="flex-1 bg-white text-slate-900 font-mono p-4 overflow-y-auto flex flex-col justify-start select-text cursor-text border-t border-slate-100"
+    >
+      {/* History Items */}
+      {history.map((item) => (
+        <div key={item.id} className="mb-2">
+          {item.command !== "" && (
+            <div className="flex items-center gap-2 text-xs mb-1">
+              <span className="text-emerald-700 font-bold">student@shellspace</span>
+              <span className="text-slate-400">:</span>
+              <span className="text-blue-700 font-semibold">{item.cwd}</span>
+              <span className="text-slate-400">$</span>
+              <span className="text-slate-900 font-medium">{item.command}</span>
+            </div>
+          )}
+          {item.output && <div className="mt-0.5">{item.output}</div>}
         </div>
+      ))}
 
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={() => setShowHistoryDrawer(!showHistoryDrawer)}
-            className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-semibold transition-all ${
-              showHistoryDrawer
-                ? "bg-blue-600 text-white shadow-xs"
-                : "bg-white text-slate-700 hover:bg-slate-200 border border-slate-200"
-            }`}
-            title="View saved commands day-wise"
-          >
-            <Clock size={12} className={showHistoryDrawer ? "text-white" : "text-blue-600"} />
-            <span>History ({savedCommands.length})</span>
-          </button>
-
-          <button
-            onClick={() => setHistory([])}
-            className="px-2 py-0.5 rounded text-[11px] font-medium bg-white hover:bg-slate-200 text-slate-600 border border-slate-200"
-            title="Clear terminal screen (or type 'clear')"
-          >
-            Clear
-          </button>
-        </div>
+      {/* Active Prompt Line */}
+      <div className="flex items-center gap-2 text-xs flex-shrink-0">
+        <span className="text-emerald-700 font-bold">student@shellspace</span>
+        <span className="text-slate-400">:</span>
+        <span className="text-blue-700 font-semibold">{getPathString(currentPath)}</span>
+        <span className="text-slate-400">$</span>
+        <input
+          ref={inputRef}
+          type="text"
+          value={inputVal}
+          onChange={(e) => setInputVal(e.target.value)}
+          onKeyDown={handleKeyDown}
+          autoFocus
+          className="flex-1 bg-transparent text-slate-900 font-mono text-xs focus:outline-none border-none p-0"
+        />
       </div>
-
-      <div className="flex-1 flex overflow-hidden">
-        {/* Main Terminal Screen */}
-        <div
-          onClick={() => inputRef.current?.focus()}
-          className="flex-1 bg-white text-slate-900 font-mono p-4 overflow-y-auto flex flex-col justify-start select-text cursor-text"
-        >
-          {/* History Items */}
-          {history.map((item) => (
-            <div key={item.id} className="mb-2">
-              {item.command !== "" && (
-                <div className="flex items-center gap-2 text-xs mb-1">
-                  <span className="text-emerald-700 font-bold">student@shellspace</span>
-                  <span className="text-slate-400">:</span>
-                  <span className="text-blue-700 font-semibold">{item.cwd}</span>
-                  <span className="text-slate-400">$</span>
-                  <span className="text-slate-900 font-medium">{item.command}</span>
-                </div>
-              )}
-              {item.output && <div className="mt-0.5">{item.output}</div>}
-            </div>
-          ))}
-
-          {/* Active Prompt Line */}
-          <div className="flex items-center gap-2 text-xs flex-shrink-0">
-            <span className="text-emerald-700 font-bold">student@shellspace</span>
-            <span className="text-slate-400">:</span>
-            <span className="text-blue-700 font-semibold">{getPathString(currentPath)}</span>
-            <span className="text-slate-400">$</span>
-            <input
-              ref={inputRef}
-              type="text"
-              value={inputVal}
-              onChange={(e) => setInputVal(e.target.value)}
-              onKeyDown={handleKeyDown}
-              autoFocus
-              className="flex-1 bg-transparent text-slate-900 font-mono text-xs focus:outline-none border-none p-0"
-            />
-          </div>
-          <div ref={terminalEndRef} />
-        </div>
-
-        {/* Day-Wise Command History Drawer */}
-        {showHistoryDrawer && (
-          <div className="w-80 md:w-96 bg-slate-50 border-l border-slate-200 flex flex-col shrink-0 select-none shadow-lg">
-            <div className="h-10 px-3 bg-white border-b border-slate-200 flex items-center justify-between">
-              <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
-                <Clock size={14} className="text-blue-600" />
-                <span>Command History (Day-Wise)</span>
-              </div>
-              <button
-                onClick={() => setShowHistoryDrawer(false)}
-                className="p-1 text-slate-400 hover:text-slate-700 rounded"
-              >
-                <X size={14} />
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-3 space-y-3">
-              {dayLabels.length === 0 ? (
-                <div className="text-center py-10 text-xs text-slate-400 italic">
-                  No commands logged yet. Type commands in the terminal!
-                </div>
-              ) : (
-                dayLabels.map((day) => (
-                  <div key={day} className="bg-white rounded-xl border border-slate-200 p-2.5 shadow-xs">
-                    <div className="text-[11px] font-bold text-blue-700 pb-1.5 border-b border-slate-100 flex items-center justify-between">
-                      <span>{day}</span>
-                      <span className="text-[10px] text-slate-400 font-normal">
-                        {dayGroups[day].length} commands
-                      </span>
-                    </div>
-
-                    <div className="mt-2 space-y-1.5">
-                      {dayGroups[day].map((entry) => (
-                        <div
-                          key={entry.id}
-                          className="group p-1.5 rounded-lg bg-slate-50 hover:bg-blue-50/70 border border-slate-100 flex items-center justify-between text-xs font-mono transition-colors"
-                        >
-                          <div className="overflow-hidden mr-2">
-                            <div className="font-semibold text-slate-900 truncate">
-                              {entry.command}
-                            </div>
-                            <div className="text-[10px] text-slate-400 flex items-center gap-2">
-                              <span>{entry.timeStr}</span>
-                              <span>•</span>
-                              <span className="truncate">{entry.cwd}</span>
-                            </div>
-                          </div>
-
-                          <div className="flex items-center gap-1 shrink-0">
-                            <button
-                              onClick={() => copyToClipboard(entry.command, entry.id)}
-                              title="Copy command"
-                              className="p-1 text-slate-400 hover:text-slate-700 rounded"
-                            >
-                              {copiedId === entry.id ? (
-                                <Check size={12} className="text-emerald-600" />
-                              ) : (
-                                <Copy size={12} />
-                              )}
-                            </button>
-                            <button
-                              onClick={() => {
-                                setInputVal(entry.command);
-                                inputRef.current?.focus();
-                              }}
-                              title="Insert into terminal"
-                              className="px-1.5 py-0.5 text-[10px] bg-blue-100 hover:bg-blue-200 text-blue-800 rounded font-sans font-semibold"
-                            >
-                              Run
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div className="p-2 bg-slate-100 border-t border-slate-200 flex items-center justify-between text-[11px] text-slate-500">
-              <span>Total: {savedCommands.length} commands saved</span>
-              <button
-                onClick={() => {
-                  if (confirm("Clear all saved command history?")) {
-                    clearSavedHistory();
-                  }
-                }}
-                className="text-[10px] text-rose-600 hover:underline"
-              >
-                Clear History
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+      <div ref={terminalEndRef} />
     </div>
   );
 }

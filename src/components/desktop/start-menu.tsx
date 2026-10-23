@@ -21,6 +21,7 @@ import {
   ExternalLink,
   Home,
   LayoutDashboard,
+  Clock,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -221,6 +222,16 @@ export function DesktopStartMenu({ user }: StartMenuProps) {
           >
             <LayoutDashboard size={13} className="text-emerald-600" />
             <span>Dashboard</span>
+          </Link>
+
+          <Link
+            href="/student/history"
+            onClick={() => setStartMenuOpen(false)}
+            className="flex items-center gap-1.5 text-slate-700 hover:text-purple-600 font-medium px-2 py-1 rounded-lg hover:bg-white transition-colors"
+            title="View Account History"
+          >
+            <Clock size={13} className="text-purple-600" />
+            <span>History</span>
           </Link>
         </div>
 

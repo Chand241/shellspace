@@ -38,7 +38,6 @@ interface CommandHistoryState {
   commands: CommandLogEntry[];
   addCommand: (command: string, cwd: string) => void;
   getGroupedByDay: () => Record<string, CommandLogEntry[]>;
-  clearHistory: () => void;
 }
 
 export const useCommandHistoryStore = create<CommandHistoryState>()(
@@ -82,10 +81,6 @@ export const useCommandHistoryStore = create<CommandHistoryState>()(
         }
 
         return groups;
-      },
-
-      clearHistory: () => {
-        set({ commands: [] });
       },
     }),
     {

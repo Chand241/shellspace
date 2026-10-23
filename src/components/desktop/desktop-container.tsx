@@ -15,7 +15,7 @@ import { FileManagerApp } from "@/components/desktop/apps/file-manager-app";
 import { DesktopSettingsApp } from "@/components/desktop/apps/settings-app";
 import type { WindowInstance } from "@/types/desktop";
 import Link from "next/link";
-import { Home, LayoutDashboard } from "lucide-react";
+import { Home, LayoutDashboard, Clock } from "lucide-react";
 
 const WALLPAPER_CLASSES: Record<string, string> = {
   "wallpaper-mesh": "bg-gradient-to-tr from-sky-100 via-blue-50 to-indigo-100",
@@ -105,6 +105,15 @@ export function DesktopContainer({ user }: DesktopContainerProps) {
           >
             <LayoutDashboard size={13} className="text-emerald-600" />
             <span>Dashboard</span>
+          </Link>
+
+          <Link
+            href="/student/history"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-white/90 hover:bg-white text-slate-800 shadow-md border border-slate-200/90 backdrop-blur-md transition-all hover:scale-105 active:scale-95"
+            title="View permanent Account History (Commands & Activities)"
+          >
+            <Clock size={13} className="text-purple-600" />
+            <span>Account History</span>
           </Link>
         </div>
 
