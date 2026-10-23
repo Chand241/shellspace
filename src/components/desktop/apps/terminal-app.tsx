@@ -1,119 +1,12 @@
 "use client";
 
-import React, { useState, useRef, useEffect, useCallback } from "react";
-import { Terminal as TerminalIcon, Sparkles, RefreshCw } from "lucide-react";
-
-interface FSNode {
-  name: string;
-  type: "file" | "dir";
-  content?: string;
-  size?: number;
-  permissions?: string;
-  owner?: string;
-  group?: string;
-  children?: Record<string, FSNode>;
-}
-
-// Initial virtual Linux filesystem
-function createInitialFS(): FSNode {
-  return {
-    name: "/",
-    type: "dir",
-    children: {
-      home: {
-        name: "home",
-        type: "dir",
-        children: {
-          student: {
-            name: "student",
-            type: "dir",
-            children: {
-              workspace: {
-                name: "workspace",
-                type: "dir",
-                children: {
-                  "welcome.sh": {
-                    name: "welcome.sh",
-                    type: "file",
-                    permissions: "-rwxr-xr-x",
-                    owner: "student",
-                    group: "student",
-                    size: 324,
-                    content: `#!/usr/bin/env bash\n# Welcome to ShellSpace Linux Laboratory\necho "========================================"\necho " Welcome to ShellSpace Virtual Linux Lab! "\necho "========================================"\necho "System: Linux ShellSpace 6.8.0-shellspace x86_64"\necho "Student: $(whoami)"\necho "Date: $(date)"\necho "Ready for OS concepts and Bash practice."\n`,
-                  },
-                  "notes.txt": {
-                    name: "notes.txt",
-                    type: "file",
-                    permissions: "-rw-r--r--",
-                    owner: "student",
-                    group: "student",
-                    size: 412,
-                    content: `Operating Systems Concepts Summary:\n1. Process Management: Process States (New, Ready, Running, Waiting, Terminated)\n2. CPU Scheduling: FCFS, SJF, SRTF, Priority, Round Robin\n3. Synchronization: Semaphores, Mutex, Deadlocks (Coffman conditions)\n4. Memory Management: Paging, Segmentation, Page Faults, LRU/FIFO\n5. File Systems: Inodes, Allocation methods (Contiguous, Linked, Indexed)\n`,
-                  },
-                  samples: {
-                    name: "samples",
-                    type: "dir",
-                    children: {
-                      "fibonacci.sh": {
-                        name: "fibonacci.sh",
-                        type: "file",
-                        permissions: "-rwxr-xr-x",
-                        owner: "student",
-                        group: "student",
-                        size: 260,
-                        content: `#!/bin/bash\n# Fibonacci sequence in Bash\necho "First 8 Fibonacci numbers:"\na=0\nb=1\nfor ((i=0; i<8; i++)); do\n  echo -n "$a "\n  fn=$((a + b))\n  a=$b\n  b=$fn\ndone\necho ""\n`,
-                      },
-                      "process_fork.sh": {
-                        name: "process_fork.sh",
-                        type: "file",
-                        permissions: "-rwxr-xr-x",
-                        owner: "student",
-                        group: "student",
-                        size: 215,
-                        content: `#!/bin/bash\necho "Parent PID: $$"\nsleep 1 & \nchild_pid=$!\necho "Spawned background child PID: $child_pid"\nwait $child_pid\necho "Child completed."\n`,
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-      etc: {
-        name: "etc",
-        type: "dir",
-        children: {
-          hostname: {
-            name: "hostname",
-            type: "file",
-            permissions: "-rw-r--r--",
-            size: 19,
-            content: "shellspace-lab-node\n",
-          },
-          "os-release": {
-            name: "os-release",
-            type: "file",
-            permissions: "-rw-r--r--",
-            size: 130,
-            content: `NAME="ShellSpace Linux"\nVERSION="2026.1 LTS"\nID=shellspace\nID_LIKE=debian\nPRETTY_NAME="ShellSpace Linux 2026.1 LTS (Educational Lab)"\n`,
-          },
-        },
-      },
-      bin: {
-        name: "bin",
-        type: "dir",
-        children: {
-          bash: { name: "bash", type: "file", permissions: "-rwxr-xr-x", size: 1245000 },
-          sh: { name: "sh", type: "file", permissions: "-rwxr-xr-x", size: 145000 },
-          ls: { name: "ls", type: "file", permissions: "-rwxr-xr-x", size: 142000 },
-          cat: { name: "cat", type: "file", permissions: "-rwxr-xr-x", size: 45000 },
-          echo: { name: "echo", type: "file", permissions: "-rwxr-xr-x", size: 38000 },
-        },
-      },
-    },
-  };
-}
+import React, { useState, useRef, useEffect } from "react";
+import {
+  useVFSStore,
+  VFSNode,
+  formatPathDisplay,
+  normalizePathParts,
+} from "@/lib/stores/vfs-store";
 
 interface HistoryItem {
   id: string;
@@ -123,12 +16,24 @@ interface HistoryItem {
 }
 
 export function TerminalApp() {
-  const [fs, setFs] = useState<FSNode>(createInitialFS);
+  const {
+    getNode,
+    mkdir,
+    touch,
+    writeFile,
+    readFile,
+    deleteNode,
+    renameNode,
+    generateTree,
+    listDirectory,
+  } = useVFSStore();
+
   const [currentPath, setCurrentPath] = useState<string[]>([
     "home",
     "student",
     "workspace",
   ]);
+
   const [inputVal, setInputVal] = useState("");
   const [history, setHistory] = useState<HistoryItem[]>([
     {
@@ -136,18 +41,22 @@ export function TerminalApp() {
       command: "",
       cwd: "~/workspace",
       output: (
-        <div className="space-y-1 mb-2">
-          <div className="text-emerald-600 font-semibold">
-            ShellSpace Bash Laboratory — Interactive Virtual Shell v2026.1
+        <div className="space-y-1 mb-2 font-mono">
+          <div className="text-emerald-600 font-bold">
+            ShellSpace Linux OS Lab — Interactive Shell v2026.1
           </div>
           <div className="text-slate-500 text-xs">
-            Type <span className="text-blue-600 font-mono font-medium">help</span> to
-            see available commands. Press <span className="text-blue-600 font-mono font-medium">Tab</span> for auto-completion.
+            Filesystem: Shared & Persisted Virtual Environment • Type{" "}
+            <span className="text-blue-600 font-semibold">help</span> for commands.
+          </div>
+          <div className="text-slate-400 text-[11px]">
+            Nested folders, files, redirects (&gt;, &gt;&gt;), tree, gcc, and scripts are fully supported.
           </div>
         </div>
       ),
     },
   ]);
+
   const [cmdHistory, setCmdHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
 
@@ -158,32 +67,7 @@ export function TerminalApp() {
     terminalEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [history]);
 
-  const resolvePathNode = useCallback(
-    (pathArray: string[]): FSNode | null => {
-      let current: FSNode = fs;
-      for (const segment of pathArray) {
-        if (!current.children || !current.children[segment]) {
-          return null;
-        }
-        current = current.children[segment];
-      }
-      return current;
-    },
-    [fs]
-  );
-
-  const getPathString = (parts: string[]) => {
-    if (
-      parts.length >= 3 &&
-      parts[0] === "home" &&
-      parts[1] === "student" &&
-      parts[2] === "workspace"
-    ) {
-      const rest = parts.slice(3).join("/");
-      return rest ? `~/workspace/${rest}` : "~/workspace";
-    }
-    return "/" + parts.join("/");
-  };
+  const getPathString = (parts: string[]) => formatPathDisplay(parts);
 
   const executeCommand = (fullCmd: string) => {
     const trimmed = fullCmd.trim();
@@ -203,37 +87,56 @@ export function TerminalApp() {
     setCmdHistory((prev) => [trimmed, ...prev]);
     setHistoryIndex(-1);
 
-    const parts = trimmed.split(" ").filter(Boolean);
+    let outputNode: React.ReactNode = null;
+    let newPath = [...currentPath];
+
+    // Check for redirection: cmd > file or cmd >> file
+    let redirection: { targetFile: string; isAppend: boolean } | null = null;
+    let commandToProcess = trimmed;
+
+    if (trimmed.includes(">>")) {
+      const parts = trimmed.split(">>");
+      commandToProcess = parts[0].trim();
+      redirection = { targetFile: parts[1].trim(), isAppend: true };
+    } else if (trimmed.includes(">")) {
+      const parts = trimmed.split(">");
+      commandToProcess = parts[0].trim();
+      redirection = { targetFile: parts[1].trim(), isAppend: false };
+    }
+
+    const parts = commandToProcess.split(" ").filter(Boolean);
     const cmd = parts[0];
     const args = parts.slice(1);
 
-    let outputNode: React.ReactNode = null;
-    let newPath = [...currentPath];
+    // If redirection is present, capture text output and write to VFS
+    let capturedTextOutput: string | null = null;
 
     switch (cmd) {
       case "help":
         outputNode = (
-          <div className="space-y-1.5 text-xs text-slate-700 py-1">
-            <div className="font-semibold text-slate-900 border-b border-slate-200 pb-1">
-              Available Linux Commands:
+          <div className="space-y-1.5 text-xs text-slate-700 py-1 font-mono">
+            <div className="font-bold text-slate-900 border-b border-slate-200 pb-1">
+              Linux OS Laboratory Commands:
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1 font-mono">
-              <div><span className="text-blue-600 font-medium">ls [-l, -a]</span>: list files</div>
-              <div><span className="text-blue-600 font-medium">cd &lt;dir&gt;</span>: change directory</div>
-              <div><span className="text-blue-600 font-medium">pwd</span>: print working dir</div>
-              <div><span className="text-blue-600 font-medium">cat &lt;file&gt;</span>: print file content</div>
-              <div><span className="text-blue-600 font-medium">echo &lt;text&gt;</span>: display text</div>
-              <div><span className="text-blue-600 font-medium">touch &lt;file&gt;</span>: create file</div>
-              <div><span className="text-blue-600 font-medium">mkdir &lt;dir&gt;</span>: make directory</div>
-              <div><span className="text-blue-600 font-medium">rm [-r] &lt;path&gt;</span>: remove file/dir</div>
-              <div><span className="text-blue-600 font-medium">bash &lt;file.sh&gt;</span>: run bash script</div>
-              <div><span className="text-blue-600 font-medium">ps [aux]</span>: show processes</div>
-              <div><span className="text-blue-600 font-medium">top</span>: monitor resources</div>
-              <div><span className="text-blue-600 font-medium">whoami / id</span>: user identity</div>
-              <div><span className="text-blue-600 font-medium">uname -a</span>: kernel info</div>
-              <div><span className="text-blue-600 font-medium">date</span>: current date/time</div>
-              <div><span className="text-blue-600 font-medium">clear</span>: clear screen</div>
-              <div><span className="text-blue-600 font-medium">history</span>: command log</div>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1 text-[11px]">
+              <div><span className="text-blue-600 font-semibold">mkdir [-p] &lt;dir&gt;</span>: create nested folder</div>
+              <div><span className="text-blue-600 font-semibold">touch &lt;file&gt;</span>: create file anywhere</div>
+              <div><span className="text-blue-600 font-semibold">ls [-l, -a] [dir]</span>: list directory contents</div>
+              <div><span className="text-blue-600 font-semibold">cd &lt;dir&gt;</span>: change directory (.., ~, /)</div>
+              <div><span className="text-blue-600 font-semibold">pwd</span>: print working directory</div>
+              <div><span className="text-blue-600 font-semibold">tree [dir]</span>: show folder hierarchy tree</div>
+              <div><span className="text-blue-600 font-semibold">cat &lt;file&gt;</span>: read and display file</div>
+              <div><span className="text-blue-600 font-semibold">echo &quot;text&quot; &gt; file</span>: write text to file</div>
+              <div><span className="text-blue-600 font-semibold">rm [-r] &lt;path&gt;</span>: remove file or folder</div>
+              <div><span className="text-blue-600 font-semibold">mv &lt;src&gt; &lt;dst&gt;</span>: move or rename</div>
+              <div><span className="text-blue-600 font-semibold">gcc &lt;file.c&gt; -o &lt;bin&gt;</span>: compile C program</div>
+              <div><span className="text-blue-600 font-semibold">./&lt;prog&gt; | bash &lt;sh&gt;</span>: run program/script</div>
+              <div><span className="text-blue-600 font-semibold">find [dir] [-name pat]</span>: search files &amp; dirs</div>
+              <div><span className="text-blue-600 font-semibold">grep &lt;pat&gt; &lt;file&gt;</span>: search text in file</div>
+              <div><span className="text-blue-600 font-semibold">wc [-l, -w] &lt;file&gt;</span>: word / line count</div>
+              <div><span className="text-blue-600 font-semibold">ps [aux] / top</span>: process inspection</div>
+              <div><span className="text-blue-600 font-semibold">whoami / uname -a</span>: system &amp; user identity</div>
+              <div><span className="text-blue-600 font-semibold">clear / history</span>: screen &amp; command log</div>
             </div>
           </div>
         );
@@ -244,11 +147,13 @@ export function TerminalApp() {
         return;
 
       case "pwd":
-        outputNode = <div className="text-xs">{"/" + currentPath.join("/")}</div>;
+        outputNode = <div className="text-xs font-mono">{getPathString(currentPath)}</div>;
+        capturedTextOutput = getPathString(currentPath) + "\n";
         break;
 
       case "whoami":
-        outputNode = <div className="text-xs text-slate-800">student</div>;
+        outputNode = <div className="text-xs font-mono text-slate-800">student</div>;
+        capturedTextOutput = "student\n";
         break;
 
       case "id":
@@ -267,12 +172,12 @@ export function TerminalApp() {
             </div>
           );
         } else {
-          outputNode = <div className="text-xs">Linux</div>;
+          outputNode = <div className="text-xs font-mono">Linux</div>;
         }
         break;
 
       case "date":
-        outputNode = <div className="text-xs">{new Date().toUTCString()}</div>;
+        outputNode = <div className="text-xs font-mono">{new Date().toUTCString()}</div>;
         break;
 
       case "history":
@@ -291,13 +196,142 @@ export function TerminalApp() {
         );
         break;
 
-      case "ls": {
-        const targetNode = resolvePathNode(currentPath);
-        if (!targetNode || targetNode.type !== "dir" || !targetNode.children) {
-          outputNode = <div className="text-xs text-rose-500">ls: cannot access directory</div>;
+      case "tree": {
+        const targetDir = args[0] || ".";
+        const treeRes = generateTree(targetDir, currentPath);
+        if (treeRes.error) {
+          outputNode = <div className="text-xs text-rose-500 font-mono">tree: {treeRes.error}</div>;
         } else {
-          const isLong = args.includes("-l") || args.includes("-la") || args.includes("-al");
-          const items = Object.values(targetNode.children);
+          outputNode = (
+            <pre className="text-xs font-mono text-slate-800 whitespace-pre-wrap leading-tight">
+              {treeRes.treeString}
+            </pre>
+          );
+          capturedTextOutput = treeRes.treeString + "\n";
+        }
+        break;
+      }
+
+      case "mkdir": {
+        let isRecursive = false;
+        const targets: string[] = [];
+
+        for (const a of args) {
+          if (a === "-p" || a === "-parents") {
+            isRecursive = true;
+          } else {
+            targets.push(a);
+          }
+        }
+
+        if (targets.length === 0) {
+          outputNode = <div className="text-xs text-rose-500 font-mono">mkdir: missing operand</div>;
+        } else {
+          const errors: string[] = [];
+          for (const t of targets) {
+            const res = mkdir(t, currentPath, { recursive: isRecursive });
+            if (!res.success) {
+              errors.push(`mkdir: cannot create directory '${t}': ${res.error}`);
+            }
+          }
+          if (errors.length > 0) {
+            outputNode = (
+              <div className="text-xs text-rose-500 font-mono space-y-0.5">
+                {errors.map((err, i) => (
+                  <div key={i}>{err}</div>
+                ))}
+              </div>
+            );
+          }
+        }
+        break;
+      }
+
+      case "touch": {
+        if (args.length === 0) {
+          outputNode = <div className="text-xs text-rose-500 font-mono">touch: missing file operand</div>;
+        } else {
+          const errors: string[] = [];
+          for (const fileTarget of args) {
+            const res = touch(fileTarget, currentPath);
+            if (!res.success) {
+              errors.push(`touch: cannot touch '${fileTarget}': ${res.error}`);
+            }
+          }
+          if (errors.length > 0) {
+            outputNode = (
+              <div className="text-xs text-rose-500 font-mono space-y-0.5">
+                {errors.map((err, i) => (
+                  <div key={i}>{err}</div>
+                ))}
+              </div>
+            );
+          }
+        }
+        break;
+      }
+
+      case "echo": {
+        const text = args.join(" ").replace(/^["']|["']$/g, "");
+        outputNode = <div className="text-xs font-mono">{text}</div>;
+        capturedTextOutput = text + "\n";
+        break;
+      }
+
+      case "cat": {
+        if (args.length === 0) {
+          outputNode = <div className="text-xs text-rose-500 font-mono">cat: missing operand</div>;
+        } else {
+          const contents: string[] = [];
+          let hasError = false;
+
+          for (const f of args) {
+            const res = readFile(f, currentPath);
+            if (res.error) {
+              hasError = true;
+              outputNode = <div className="text-xs text-rose-500 font-mono">cat: {f}: {res.error}</div>;
+              break;
+            } else {
+              contents.push(res.content ?? "");
+            }
+          }
+
+          if (!hasError) {
+            const fullContent = contents.join("\n");
+            outputNode = (
+              <pre className="text-xs font-mono text-slate-800 whitespace-pre-wrap leading-relaxed">
+                {fullContent}
+              </pre>
+            );
+            capturedTextOutput = fullContent;
+          }
+        }
+        break;
+      }
+
+      case "ls": {
+        let isLong = false;
+        let isAll = false;
+        let targetPath = ".";
+
+        for (const a of args) {
+          if (a.startsWith("-")) {
+            if (a.includes("l")) isLong = true;
+            if (a.includes("a")) isAll = true;
+          } else {
+            targetPath = a;
+          }
+        }
+
+        const listRes = listDirectory(targetPath, currentPath);
+        if (listRes.error || !listRes.items) {
+          outputNode = (
+            <div className="text-xs text-rose-500 font-mono">
+              ls: cannot access &apos;{targetPath}&apos;: {listRes.error || "No such file or directory"}
+            </div>
+          );
+        } else {
+          const items = listRes.items;
 
           if (isLong) {
             outputNode = (
@@ -309,15 +343,15 @@ export function TerminalApp() {
                       {it.permissions || (it.type === "dir" ? "drwxr-xr-x" : "-rw-r--r--")}
                     </span>
                     <span className="text-slate-500 w-16">student student</span>
-                    <span className="text-slate-500 w-12 text-right">
-                      {it.size || 4096}
+                    <span className="text-slate-500 w-14 text-right">
+                      {it.size !== undefined ? it.size : 4096}
                     </span>
-                    <span className="text-slate-400">Oct 23 11:30</span>
+                    <span className="text-slate-400">{it.modified}</span>
                     <span
                       className={`font-semibold ${
                         it.type === "dir"
                           ? "text-blue-600"
-                          : it.name.endsWith(".sh")
+                          : it.name.endsWith(".sh") || it.name.endsWith(".c")
                           ? "text-emerald-600"
                           : "text-slate-800"
                       }`}
@@ -337,7 +371,7 @@ export function TerminalApp() {
                     className={`font-semibold ${
                       it.type === "dir"
                         ? "text-blue-600"
-                        : it.name.endsWith(".sh")
+                        : it.name.endsWith(".sh") || it.name.endsWith(".c")
                         ? "text-emerald-600"
                         : "text-slate-800"
                     }`}
@@ -356,176 +390,138 @@ export function TerminalApp() {
         const target = args[0];
         if (!target || target === "~") {
           newPath = ["home", "student", "workspace"];
-        } else if (target === "/") {
-          newPath = [];
-        } else if (target === "..") {
-          if (newPath.length > 0) newPath.pop();
         } else {
-          const testPath = target.startsWith("/")
-            ? target.split("/").filter(Boolean)
-            : [...newPath, ...target.split("/").filter(Boolean)];
+          const resolved = normalizePathParts(target, currentPath);
+          const targetNode = getNode(resolved);
 
-          const node = resolvePathNode(testPath);
-          if (node && node.type === "dir") {
-            newPath = testPath;
-          } else {
+          if (!targetNode) {
             outputNode = (
-              <div className="text-xs text-rose-500">
+              <div className="text-xs text-rose-500 font-mono">
                 cd: {target}: No such file or directory
               </div>
             );
+          } else if (targetNode.type !== "dir") {
+            outputNode = (
+              <div className="text-xs text-rose-500 font-mono">
+                cd: {target}: Not a directory
+              </div>
+            );
+          } else {
+            newPath = resolved;
           }
         }
         setCurrentPath(newPath);
         break;
       }
 
-      case "cat": {
-        const file = args[0];
-        if (!file) {
-          outputNode = <div className="text-xs text-rose-500">cat: missing operand</div>;
-        } else {
-          const targetNode = resolvePathNode([...currentPath, file]);
-          if (!targetNode) {
-            outputNode = <div className="text-xs text-rose-500">cat: {file}: No such file</div>;
-          } else if (targetNode.type === "dir") {
-            outputNode = <div className="text-xs text-rose-500">cat: {file}: Is a directory</div>;
+      case "rm": {
+        let isRecursive = false;
+        const targets: string[] = [];
+
+        for (const a of args) {
+          if (a === "-r" || a === "-rf" || a === "-R") {
+            isRecursive = true;
           } else {
+            targets.push(a);
+          }
+        }
+
+        if (targets.length === 0) {
+          outputNode = <div className="text-xs text-rose-500 font-mono">rm: missing operand</div>;
+        } else {
+          const errors: string[] = [];
+          for (const t of targets) {
+            const res = deleteNode(t, currentPath, isRecursive);
+            if (!res.success) {
+              errors.push(`rm: cannot remove '${t}': ${res.error}`);
+            }
+          }
+          if (errors.length > 0) {
             outputNode = (
-              <pre className="text-xs font-mono text-slate-800 whitespace-pre-wrap leading-relaxed">
-                {targetNode.content || ""}
-              </pre>
+              <div className="text-xs text-rose-500 font-mono space-y-0.5">
+                {errors.map((err, i) => (
+                  <div key={i}>{err}</div>
+                ))}
+              </div>
             );
           }
         }
         break;
       }
 
-      case "echo": {
-        const text = args.join(" ").replace(/^["']|["']$/g, "");
-        outputNode = <div className="text-xs font-mono">{text}</div>;
-        break;
-      }
-
-      case "touch": {
-        const fileName = args[0];
-        if (!fileName) {
-          outputNode = <div className="text-xs text-rose-500">touch: missing file operand</div>;
+      case "mv": {
+        if (args.length < 2) {
+          outputNode = <div className="text-xs text-rose-500 font-mono">mv: missing destination file operand</div>;
         } else {
-          const parentNode = resolvePathNode(currentPath);
-          if (parentNode && parentNode.children) {
-            parentNode.children[fileName] = {
-              name: fileName,
-              type: "file",
-              permissions: "-rw-r--r--",
-              owner: "student",
-              group: "student",
-              size: 0,
-              content: "",
-            };
-            setFs({ ...fs });
+          const src = args[0];
+          const dst = args[1];
+          const res = renameNode(src, dst, currentPath);
+          if (!res.success) {
+            outputNode = <div className="text-xs text-rose-500 font-mono">mv: {res.error}</div>;
           }
         }
         break;
       }
 
-      case "mkdir": {
-        const dirName = args[0];
-        if (!dirName) {
-          outputNode = <div className="text-xs text-rose-500">mkdir: missing operand</div>;
+      case "find": {
+        const targetDir = args[0] && !args[0].startsWith("-") ? args[0] : ".";
+        const nameIdx = args.indexOf("-name");
+        const pattern = nameIdx !== -1 ? args[nameIdx + 1] : null;
+
+        const resolved = normalizePathParts(targetDir, currentPath);
+        const node = getNode(resolved);
+
+        if (!node) {
+          outputNode = <div className="text-xs text-rose-500 font-mono">find: &apos;{targetDir}&apos;: No such file or directory</div>;
         } else {
-          const parentNode = resolvePathNode(currentPath);
-          if (parentNode && parentNode.children) {
-            parentNode.children[dirName] = {
-              name: dirName,
-              type: "dir",
-              permissions: "drwxr-xr-x",
-              children: {},
-            };
-            setFs({ ...fs });
-          }
+          const results: string[] = [];
+
+          const searchRecursive = (curr: VFSNode, curPath: string) => {
+            if (!pattern || curr.name.includes(pattern.replace(/\*/g, ""))) {
+              results.push(curPath);
+            }
+            if (curr.children) {
+              for (const childName of Object.keys(curr.children)) {
+                searchRecursive(curr.children[childName], `${curPath}/${childName}`);
+              }
+            }
+          };
+
+          searchRecursive(node, targetDir === "." ? "." : node.name);
+          outputNode = (
+            <div className="text-xs font-mono space-y-0.5 text-slate-800">
+              {results.map((r, i) => (
+                <div key={i}>{r}</div>
+              ))}
+            </div>
+          );
         }
         break;
       }
 
-      case "ps":
-        outputNode = (
-          <div className="text-xs font-mono space-y-0.5">
-            <div className="text-slate-400 font-semibold">PID  TTY          TIME CMD</div>
-            <div> 101 pts/0    00:00:00 bash</div>
-            <div> 142 pts/0    00:00:00 ps</div>
-            <div> 204 ?        00:00:01 shellspace-daemon</div>
-          </div>
-        );
-        break;
-
-      case "top":
-        outputNode = (
-          <div className="text-xs font-mono space-y-1 border border-slate-200 rounded p-2 bg-slate-50">
-            <div className="text-blue-700 font-semibold">
-              top - 11:35:00 up 2:14, 1 user, load average: 0.08, 0.03, 0.01
-            </div>
-            <div className="text-slate-600">
-              Tasks: 3 total, 1 running, 2 sleeping, 0 stopped, 0 zombie
-            </div>
-            <div className="text-slate-600">
-              %Cpu(s): 1.8 us, 0.9 sy, 0.0 ni, 97.2 id, 0.1 wa
-            </div>
-            <div className="text-slate-600">
-              MiB Mem : 4096.0 total, 2780.4 free, 942.1 used, 373.5 buff/cache
-            </div>
-            <div className="text-slate-700 font-semibold mt-2">
-              PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
-            </div>
-            <div> 101 student   20   0   14.2m   4.8m   3.2m S   0.0   0.1   0:00.12 bash</div>
-            <div> 204 student   20   0  128.5m  32.1m  16.4m S   1.2   0.8   0:01.40 shellspace-daemon</div>
-          </div>
-        );
-        break;
-
-      case "bash": {
-        const scriptName = args[0];
-        if (!scriptName) {
-          outputNode = <div className="text-xs text-rose-500">bash: script name required</div>;
+      case "grep": {
+        if (args.length < 2) {
+          outputNode = <div className="text-xs text-rose-500 font-mono">grep: usage: grep &lt;pattern&gt; &lt;file&gt;</div>;
         } else {
-          const fileNode = resolvePathNode([...currentPath, scriptName]);
-          if (!fileNode || fileNode.type !== "file") {
-            outputNode = (
-              <div className="text-xs text-rose-500">bash: {scriptName}: No such file</div>
-            );
+          const pat = args[0].replace(/^["']|["']$/g, "");
+          const file = args[1];
+          const res = readFile(file, currentPath);
+
+          if (res.error) {
+            outputNode = <div className="text-xs text-rose-500 font-mono">grep: {file}: {res.error}</div>;
           } else {
-            // Emulate running script output
-            if (scriptName === "welcome.sh") {
-              outputNode = (
-                <div className="text-xs font-mono space-y-0.5 text-emerald-800">
-                  <div>========================================</div>
-                  <div> Welcome to ShellSpace Virtual Linux Lab! </div>
-                  <div>========================================</div>
-                  <div>System: Linux ShellSpace 6.8.0-shellspace x86_64</div>
-                  <div>Student: student</div>
-                  <div>Date: {new Date().toUTCString()}</div>
-                  <div>Ready for OS concepts and Bash practice.</div>
-                </div>
-              );
-            } else if (scriptName === "fibonacci.sh") {
-              outputNode = (
-                <div className="text-xs font-mono text-slate-800">
-                  <div>First 8 Fibonacci numbers:</div>
-                  <div className="text-blue-600 font-bold">0 1 1 2 3 5 8 13</div>
-                </div>
-              );
-            } else if (scriptName === "process_fork.sh") {
-              outputNode = (
-                <div className="text-xs font-mono space-y-0.5 text-slate-800">
-                  <div>Parent PID: 101</div>
-                  <div className="text-slate-500">Spawned background child PID: 184</div>
-                  <div className="text-emerald-600">Child completed.</div>
-                </div>
-              );
+            const lines = (res.content || "").split("\n");
+            const matched = lines.filter((l) => l.includes(pat));
+            if (matched.length === 0) {
+              outputNode = null;
             } else {
               outputNode = (
-                <div className="text-xs font-mono text-emerald-700">
-                  [Script executed successfully with exit code 0]
+                <div className="text-xs font-mono space-y-0.5">
+                  {matched.map((l, i) => (
+                    <div key={i} className="text-slate-800">
+                      {l}
+                    </div>
+                  ))}
                 </div>
               );
             }
@@ -534,12 +530,174 @@ export function TerminalApp() {
         break;
       }
 
+      case "wc": {
+        const file = args.find((a) => !a.startsWith("-"));
+        if (!file) {
+          outputNode = <div className="text-xs text-rose-500 font-mono">wc: missing file operand</div>;
+        } else {
+          const res = readFile(file, currentPath);
+          if (res.error) {
+            outputNode = <div className="text-xs text-rose-500 font-mono">wc: {file}: {res.error}</div>;
+          } else {
+            const content = res.content || "";
+            const lines = content.split("\n").length;
+            const words = content.trim().split(/\s+/).filter(Boolean).length;
+            const chars = content.length;
+            outputNode = (
+              <div className="text-xs font-mono text-slate-800">
+                {lines} {words} {chars} {file}
+              </div>
+            );
+          }
+        }
+        break;
+      }
+
+      case "gcc": {
+        // OS Lab C Compiler simulation
+        const cFile = args.find((a) => a.endsWith(".c"));
+        let outName = "a.out";
+        const oIdx = args.indexOf("-o");
+        if (oIdx !== -1 && args[oIdx + 1]) {
+          outName = args[oIdx + 1];
+        }
+
+        if (!cFile) {
+          outputNode = <div className="text-xs text-rose-500 font-mono">gcc: fatal error: no input files</div>;
+        } else {
+          const fileRes = readFile(cFile, currentPath);
+          if (fileRes.error) {
+            outputNode = <div className="text-xs text-rose-500 font-mono">gcc: error: {cFile}: {fileRes.error}</div>;
+          } else {
+            // Create compiled binary executable in VFS!
+            touch(outName, currentPath, `[EXECUTABLE_BINARY: compiled from ${cFile}]`);
+            outputNode = (
+              <div className="text-xs font-mono text-emerald-600">
+                Compilation successful. Generated binary executable &apos;{outName}&apos;.
+              </div>
+            );
+          }
+        }
+        break;
+      }
+
+      case "bash":
+      case "sh": {
+        const scriptName = args[0];
+        if (!scriptName) {
+          outputNode = <div className="text-xs text-rose-500 font-mono">{cmd}: script name required</div>;
+        } else {
+          const fileRes = readFile(scriptName, currentPath);
+          if (fileRes.error) {
+            outputNode = <div className="text-xs text-rose-500 font-mono">{cmd}: {scriptName}: {fileRes.error}</div>;
+          } else {
+            const content = fileRes.content || "";
+            // Check known lab scripts or general bash simulation
+            if (scriptName.includes("fcfs") || content.includes("FCFS")) {
+              outputNode = (
+                <div className="text-xs font-mono space-y-1 text-slate-800">
+                  <div className="text-blue-600 font-bold">[FCFS CPU Scheduling Simulation]</div>
+                  <div>P1: Arrival=0, Burst=5, Completion=5, TAT=5, WT=0</div>
+                  <div>P2: Arrival=1, Burst=8, Completion=13, TAT=12, WT=4</div>
+                  <div>P3: Arrival=2, Burst=6, Completion=19, TAT=17, WT=11</div>
+                  <div className="text-emerald-600 font-semibold">Average Waiting Time: 5.00 ms</div>
+                </div>
+              );
+            } else if (scriptName.includes("fork") || content.includes("fork")) {
+              outputNode = (
+                <div className="text-xs font-mono space-y-0.5 text-slate-800">
+                  <div>Parent Process PID: 1042</div>
+                  <div className="text-blue-600">Forking child process...</div>
+                  <div className="text-emerald-600">[CHILD] PID = 1043, Parent PID = 1042</div>
+                  <div>[PARENT] Child 1043 finished. Exiting.</div>
+                </div>
+              );
+            } else if (scriptName === "welcome.sh") {
+              outputNode = (
+                <div className="text-xs font-mono space-y-0.5 text-emerald-800">
+                  <div>==================================================</div>
+                  <div> Welcome to ShellSpace Virtual Linux &amp; OS Lab! </div>
+                  <div>==================================================</div>
+                  <div>Kernel: Linux 6.8.0-shellspace x86_64</div>
+                  <div>User : student</div>
+                  <div>Ready for OS concepts and Bash practice.</div>
+                </div>
+              );
+            } else {
+              // Extract echo statements from content
+              const echoLines = content
+                .split("\n")
+                .filter((l) => l.trim().startsWith("echo "))
+                .map((l) => l.trim().replace(/^echo\s+["']?/, "").replace(/["']?$/, ""));
+
+              if (echoLines.length > 0) {
+                outputNode = (
+                  <div className="text-xs font-mono space-y-0.5 text-slate-800">
+                    {echoLines.map((line, idx) => (
+                      <div key={idx}>{line}</div>
+                    ))}
+                  </div>
+                );
+              } else {
+                outputNode = (
+                  <div className="text-xs font-mono text-emerald-600">
+                    [Script &apos;{scriptName}&apos; executed successfully with exit code 0]
+                  </div>
+                );
+              }
+            }
+          }
+        }
+        break;
+      }
+
       default:
+        // Check if user is executing a binary e.g. ./a.out or ./program
+        if (cmd.startsWith("./")) {
+          const progName = cmd.slice(2);
+          const fileRes = readFile(progName, currentPath);
+          if (fileRes.error) {
+            outputNode = (
+              <div className="text-xs text-rose-500 font-mono">
+                shellspace-sh: {cmd}: No such file or directory
+              </div>
+            );
+          } else {
+            // Execute simulated OS lab binary
+            outputNode = (
+              <div className="text-xs font-mono space-y-1 text-slate-800">
+                <div className="text-emerald-600 font-bold">[Executing: {progName}]</div>
+                <div>Process PID: {Math.floor(1000 + Math.random() * 9000)}</div>
+                <div className="text-slate-700">OS Lab Simulation Output: execution finished normally (exit code 0)</div>
+              </div>
+            );
+          }
+        } else {
+          outputNode = (
+            <div className="text-xs text-rose-500 font-mono">
+              shellspace-sh: {cmd}: command not found. Type <span className="font-semibold underline">help</span> for available commands.
+            </div>
+          );
+        }
+    }
+
+    // Handle redirection writing into VFS!
+    if (redirection && capturedTextOutput !== null) {
+      const res = writeFile(
+        redirection.targetFile,
+        currentPath,
+        capturedTextOutput,
+        redirection.isAppend
+      );
+      if (!res.success) {
         outputNode = (
           <div className="text-xs text-rose-500 font-mono">
-            shellspace-sh: {cmd}: command not found. Type <span className="font-semibold underline">help</span> for assistance.
+            bash: {redirection.targetFile}: {res.error}
           </div>
         );
+      } else {
+        outputNode = null; // stdout was redirected to file!
+      }
     }
 
     setHistory((prev) => [
@@ -576,10 +734,10 @@ export function TerminalApp() {
       }
     } else if (e.key === "Tab") {
       e.preventDefault();
-      // Auto-complete
-      const targetNode = resolvePathNode(currentPath);
-      if (targetNode?.children) {
-        const keys = Object.keys(targetNode.children);
+      // Auto-complete current directory items
+      const curr = getNode(currentPath);
+      if (curr?.children) {
+        const keys = Object.keys(curr.children);
         const match = keys.find((k) => k.startsWith(inputVal.trim()));
         if (match) {
           setInputVal(match);
@@ -598,11 +756,11 @@ export function TerminalApp() {
         <div key={item.id} className="mb-2">
           {item.command !== "" && (
             <div className="flex items-center gap-2 text-xs mb-1">
-              <span className="text-emerald-700 font-semibold">student@shellspace</span>
+              <span className="text-emerald-700 font-bold">student@shellspace</span>
               <span className="text-slate-400">:</span>
-              <span className="text-blue-700 font-medium">{item.cwd}</span>
+              <span className="text-blue-700 font-semibold">{item.cwd}</span>
               <span className="text-slate-400">$</span>
-              <span className="text-slate-900 font-semibold">{item.command}</span>
+              <span className="text-slate-900 font-medium">{item.command}</span>
             </div>
           )}
           {item.output && <div className="mt-0.5">{item.output}</div>}
@@ -611,9 +769,9 @@ export function TerminalApp() {
 
       {/* Active Prompt Line */}
       <div className="flex items-center gap-2 text-xs flex-shrink-0">
-        <span className="text-emerald-700 font-semibold">student@shellspace</span>
+        <span className="text-emerald-700 font-bold">student@shellspace</span>
         <span className="text-slate-400">:</span>
-        <span className="text-blue-700 font-medium">{getPathString(currentPath)}</span>
+        <span className="text-blue-700 font-semibold">{getPathString(currentPath)}</span>
         <span className="text-slate-400">$</span>
         <input
           ref={inputRef}
