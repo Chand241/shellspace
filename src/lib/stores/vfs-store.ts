@@ -380,14 +380,13 @@ export function normalizePathParts(rawPath: string, cwdParts: string[]): string[
   let clean = rawPath.trim();
   if (!clean) return [...cwdParts];
 
-  let isAbsolute = false;
   let parts: string[] = [];
 
   if (clean === "~" || clean.startsWith("~/")) {
-    parts = ["home", "student", "workspace"];
+    // In Linux, ~ is /home/student
+    parts = ["home", "student"];
     clean = clean.replace(/^~\/?/, "");
   } else if (clean.startsWith("/")) {
-    isAbsolute = true;
     clean = clean.replace(/^\/+/, "");
   } else {
     parts = [...cwdParts];
@@ -411,13 +410,12 @@ export function normalizePathParts(rawPath: string, cwdParts: string[]): string[
 export function formatPathDisplay(parts: string[]): string {
   if (parts.length === 0) return "/";
   if (
-    parts.length >= 3 &&
+    parts.length >= 2 &&
     parts[0] === "home" &&
-    parts[1] === "student" &&
-    parts[2] === "workspace"
+    parts[1] === "student"
   ) {
-    const sub = parts.slice(3).join("/");
-    return sub ? `~/workspace/${sub}` : "~/workspace";
+    const sub = parts.slice(2).join("/");
+    return sub ? `~/${sub}` : "~";
   }
   return "/" + parts.join("/");
 }
@@ -478,10 +476,22 @@ export const useVFSStore = create<VFSState>()(
       getNode: (pathParts: string[]): VFSNode | null => {
         let current: VFSNode = get().root;
         for (const segment of pathParts) {
-          if (!current.children || !current.children[segment]) {
-            return null;
+          if (!current.children) return null;
+
+          // Exact match first
+          if (current.children[segment]) {
+            current = current.children[segment];
+          } else {
+            // Case-insensitive fallback (e.g. desktop -> Desktop)
+            const matchedKey = Object.keys(current.children).find(
+              (k) => k.toLowerCase() === segment.toLowerCase()
+            );
+            if (matchedKey) {
+              current = current.children[matchedKey];
+            } else {
+              return null;
+            }
           }
-          current = current.children[segment];
         }
         return current;
       },

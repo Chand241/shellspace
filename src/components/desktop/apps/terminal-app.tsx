@@ -389,15 +389,29 @@ export function TerminalApp() {
       case "cd": {
         const target = args[0];
         if (!target || target === "~") {
-          newPath = ["home", "student", "workspace"];
+          newPath = ["home", "student"];
         } else {
           const resolved = normalizePathParts(target, currentPath);
-          const targetNode = getNode(resolved);
+          let targetNode = getNode(resolved);
+          let finalPath = resolved;
+
+          // If not found in current directory, check if it's in home directory (~/target or ../target)
+          if (!targetNode && !target.startsWith("/") && !target.startsWith("~")) {
+            const homeCandidate = normalizePathParts(`~/${target}`, currentPath);
+            const homeNode = getNode(homeCandidate);
+            if (homeNode && homeNode.type === "dir") {
+              targetNode = homeNode;
+              finalPath = homeCandidate;
+            }
+          }
 
           if (!targetNode) {
             outputNode = (
-              <div className="text-xs text-rose-500 font-mono">
-                cd: {target}: No such file or directory
+              <div className="text-xs text-rose-500 font-mono space-y-0.5">
+                <div>cd: {target}: No such file or directory</div>
+                <div className="text-slate-400 text-[11px]">
+                  Hint: In Linux, folder names are case-sensitive (e.g. &apos;Desktop&apos; with a capital &apos;D&apos;). Type &apos;ls&apos; to view available folders.
+                </div>
               </div>
             );
           } else if (targetNode.type !== "dir") {
@@ -407,7 +421,23 @@ export function TerminalApp() {
               </div>
             );
           } else {
-            newPath = resolved;
+            // Build canonical path with proper casing from nodes
+            let curr = getNode([]);
+            const canonicalParts: string[] = [];
+            for (const seg of finalPath) {
+              if (curr?.children) {
+                const matchedKey =
+                  curr.children[seg] ? seg :
+                  Object.keys(curr.children).find(
+                    (k) => k.toLowerCase() === seg.toLowerCase()
+                  ) || seg;
+                canonicalParts.push(matchedKey);
+                curr = curr.children[matchedKey];
+              } else {
+                canonicalParts.push(seg);
+              }
+            }
+            newPath = canonicalParts;
           }
         }
         setCurrentPath(newPath);
