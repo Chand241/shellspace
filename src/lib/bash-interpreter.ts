@@ -1,5 +1,6 @@
 /**
  * Lightweight, robust in-browser Bash & Shell script execution engine for ShellSpace OS Lab
+ * Supports interactive `read` via pre-supplied inputMap.
  */
 
 export interface ExecutionResult {
@@ -9,7 +10,27 @@ export interface ExecutionResult {
   durationMs: number;
 }
 
-export function executeBashScript(scriptCode: string, argsStr = ""): ExecutionResult {
+/** Scan script and return all variable names used in `read VAR` statements (in order) */
+export function detectReadVariables(scriptCode: string): Array<{ varName: string; prompt: string }> {
+  const vars: Array<{ varName: string; prompt: string }> = [];
+  const seen = new Set<string>();
+  for (const raw of scriptCode.split("\n")) {
+    const line = raw.trim();
+    // read -p "prompt" VAR
+    const pm = line.match(/^read\s+(?:-[rp]+\s+)?["']([^"']*)["']\s+([a-zA-Z_][a-zA-Z0-9_]*)/);
+    if (pm && !seen.has(pm[2])) { seen.add(pm[2]); vars.push({ varName: pm[2], prompt: pm[1] }); continue; }
+    // read VAR  /  read -r VAR
+    const sm = line.match(/^read(?:\s+-[rp]+)?\s+([a-zA-Z_][a-zA-Z0-9_]*)/);
+    if (sm && !seen.has(sm[1])) { seen.add(sm[1]); vars.push({ varName: sm[1], prompt: `Enter value for ${sm[1]}:` }); }
+  }
+  return vars;
+}
+
+export function executeBashScript(
+  scriptCode: string,
+  argsStr = "",
+  inputMap: Record<string, string> = {}
+): ExecutionResult {
   const startTime = performance.now();
   const stdoutLines: string[] = [];
   const stderrLines: string[] = [];
@@ -20,6 +41,7 @@ export function executeBashScript(scriptCode: string, argsStr = ""): ExecutionRe
     "#": rawArgs.length,
     "@": rawArgs.join(" "),
     "*": rawArgs.join(" "),
+    ...inputMap,           // Pre-load all user-provided read inputs
   };
 
   rawArgs.forEach((arg, i) => {
@@ -273,6 +295,31 @@ export function executeBashScript(scriptCode: string, argsStr = ""): ExecutionRe
   try {
     while (ip < lines.length && safetyCounter++ < maxIterations) {
       const line = lines[ip];
+
+      // ─── read command ──────────────────────────────────────────────────────
+      // Handles: read VAR, read -r VAR, read -p "prompt" VAR, read -rp "..." VAR
+      {
+        const readPM = line.match(/^read\s+(?:-[rp]+\s+)?["']([^"']*)["']\s+([a-zA-Z_][a-zA-Z0-9_]*)/);
+        const readSM = !readPM && line.match(/^read(?:\s+-[rp]+)?\s+([a-zA-Z_][a-zA-Z0-9_]*)/);
+        const readVarName = readPM ? readPM[2] : readSM ? readSM[1] : null;
+        const readPrompt  = readPM ? readPM[1] : readVarName ? `${readVarName}: ` : "";
+
+        if (readVarName) {
+          // Echo prompt line (mirrors real shell behaviour)
+          if (readPrompt.trim()) stdoutLines.push(readPrompt);
+
+          if (inputMap[readVarName] !== undefined) {
+            // Value was pre-supplied by user
+            stdoutLines.push(`> ${inputMap[readVarName]}`);
+          } else {
+            // No input supplied — emit guidance and leave variable empty
+            stdoutLines.push(`[⚠ Input required for '${readVarName}' — fill in the Input panel and re-run]`);
+            variables[readVarName] = "";
+          }
+          ip++;
+          continue;
+        }
+      }
 
       // Assignment: VAR=value
       const assignMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)=([\s\S]*)$/);

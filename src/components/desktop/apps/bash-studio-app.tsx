@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Play,
   RotateCcw,
@@ -14,7 +14,7 @@ import {
   Sparkles,
   Check,
 } from "lucide-react";
-import { executeBashScript } from "@/lib/bash-interpreter";
+import { executeBashScript, detectReadVariables } from "@/lib/bash-interpreter";
 import { useVFSStore } from "@/lib/stores/vfs-store";
 
 interface ScriptTemplate {
@@ -197,12 +197,34 @@ export function BashStudioApp() {
   const [customArgs, setCustomArgs] = useState("");
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
 
+  // --- Detect `read` variables in code and manage their input values ---
+  const [readVars, setReadVars] = useState<Array<{ varName: string; prompt: string }>>([]);
+  const [inputValues, setInputValues] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    const detected = detectReadVariables(code);
+    setReadVars(detected);
+    // Preserve existing input values, add new keys
+    setInputValues((prev) => {
+      const next: Record<string, string> = {};
+      for (const { varName } of detected) {
+        next[varName] = prev[varName] ?? "";
+      }
+      return next;
+    });
+  }, [code]);
+
+  const handleInputChange = (varName: string, value: string) => {
+    setInputValues((prev) => ({ ...prev, [varName]: value }));
+  };
+
   const handleTemplateChange = (key: string) => {
     setSelectedTemplate(key);
     if (TEMPLATES[key]) {
       setCode(TEMPLATES[key].code);
       setConsoleOutput("");
       setExitCode(null);
+      setInputValues({});
     }
   };
 
@@ -211,7 +233,7 @@ export function BashStudioApp() {
     setConsoleOutput("Initializing ShellSpace Linux execution sandbox...\n");
 
     setTimeout(() => {
-      const result = executeBashScript(code, customArgs);
+      const result = executeBashScript(code, customArgs, inputValues);
       let outputText = result.stdout;
       if (result.stderr) {
         outputText = (outputText ? outputText + "\n" : "") + result.stderr;
@@ -300,6 +322,31 @@ export function BashStudioApp() {
           </button>
         </div>
       </div>
+
+      {/* Script Input Panel (shown only when script has `read` commands) */}
+      {readVars.length > 0 && (
+        <div className="flex-shrink-0 px-4 py-2.5 bg-amber-50 border-b border-amber-200 flex flex-wrap items-center gap-x-5 gap-y-2">
+          <span className="text-xs font-bold text-amber-700 flex items-center gap-1.5 shrink-0">
+            <Sparkles size={13} className="text-amber-500" />
+            Script Inputs
+          </span>
+          {readVars.map(({ varName, prompt }) => (
+            <div key={varName} className="flex items-center gap-1.5">
+              <label className="text-[11px] font-semibold text-amber-800 font-mono whitespace-nowrap">
+                {prompt.replace(/:?\s*$/, "")}:
+              </label>
+              <input
+                type="text"
+                value={inputValues[varName] ?? ""}
+                onChange={(e) => handleInputChange(varName, e.target.value)}
+                placeholder={`$${varName}`}
+                className="text-xs px-2 py-0.5 border border-amber-300 rounded bg-white text-slate-800 font-mono w-32 focus:outline-none focus:ring-1 focus:ring-amber-400 placeholder:text-amber-300"
+              />
+            </div>
+          ))}
+          <span className="text-[11px] text-amber-600 italic">Values will be passed to read commands automatically</span>
+        </div>
+      )}
 
       {/* Editor & Console Split */}
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
