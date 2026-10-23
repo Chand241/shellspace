@@ -12,7 +12,10 @@ import {
   AlertTriangle,
   Clock,
   Sparkles,
+  Check,
 } from "lucide-react";
+import { executeBashScript } from "@/lib/bash-interpreter";
+import { useVFSStore } from "@/lib/stores/vfs-store";
 
 interface ScriptTemplate {
   name: string;
@@ -184,6 +187,7 @@ consume
 };
 
 export function BashStudioApp() {
+  const { writeFile } = useVFSStore();
   const [selectedTemplate, setSelectedTemplate] = useState("fcfs");
   const [code, setCode] = useState(TEMPLATES.fcfs.code);
   const [consoleOutput, setConsoleOutput] = useState<string>("");
@@ -191,6 +195,7 @@ export function BashStudioApp() {
   const [exitCode, setExitCode] = useState<number | null>(null);
   const [execDuration, setExecDuration] = useState<number | null>(null);
   const [customArgs, setCustomArgs] = useState("");
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
 
   const handleTemplateChange = (key: string) => {
     setSelectedTemplate(key);
@@ -203,64 +208,30 @@ export function BashStudioApp() {
 
   const handleRunScript = () => {
     setIsRunning(true);
-    setConsoleOutput("Spawning isolated execution container...\n");
-    const startTime = performance.now();
+    setConsoleOutput("Initializing ShellSpace Linux execution sandbox...\n");
 
     setTimeout(() => {
-      let output = "";
-      // Deterministic simulation based on script
-      if (code.includes("FCFS")) {
-        output = `------------------------------------------------------------
-PID   Arrival   Burst   Completion   Turnaround   Waiting
-------------------------------------------------------------
-P1    0         6       6            6            0      
-P2    1         8       14           13           5      
-P3    2         7       21           19           12     
-P4    3         3       24           21           18     
-------------------------------------------------------------
-Average Turnaround Time: 14.75 ms
-Average Waiting Time   : 8.75 ms
-Scheduling simulation complete.`;
-      } else if (code.includes("Round Robin")) {
-        output = `Simulation starting with Time Quantum = 2 ms
-Gantt Chart timeline:
-  [Time 2 ms] Process P1 ran 2 ms (Remaining: 3)
-  [Time 4 ms] Process P2 ran 2 ms (Remaining: 2)
-  [Time 6 ms] Process P3 FINISHED!
-  [Time 7 ms] Process P4 FINISHED!
-  [Time 9 ms] Process P1 ran 2 ms (Remaining: 1)
-  [Time 11 ms] Process P2 FINISHED!
-  [Time 12 ms] Process P1 FINISHED!
-All processes completed execution at 12 ms.`;
-      } else if (code.includes("Banker")) {
-        output = `Checking system state safety...
-Available Resources: [A: 3, B: 3, C: 2]
-Allocated Matrix: 5 processes x 3 resources
-Computing safe sequence...
-
-SAFE STATE CONFIRMED!
-Safe Execution Sequence: <P1 P3 P4 P0 P2>
-No deadlock can occur under current resource allocation.`;
-      } else if (code.includes("Producer")) {
-        output = `Buffer capacity: 3 items
-[PRODUCER] Produced item 'DataPacket_A'. Buffer count: 1
-[PRODUCER] Produced item 'DataPacket_B'. Buffer count: 2
-[CONSUMER] Consumed item 'DataPacket_A'. Buffer count: 1
-[PRODUCER] Produced item 'DataPacket_C'. Buffer count: 2
-[PRODUCER] Produced item 'DataPacket_D'. Buffer count: 3
-[CONSUMER] Consumed item 'DataPacket_B'. Buffer count: 2
-[CONSUMER] Consumed item 'DataPacket_C'. Buffer count: 1
-[CONSUMER] Consumed item 'DataPacket_D'. Buffer count: 0`;
-      } else {
-        output = `Executing script in ShellSpace sandbox...\n[Exit Code: 0]\nOutput:\nHello from ShellSpace script runner!`;
+      const result = executeBashScript(code, customArgs);
+      let outputText = result.stdout;
+      if (result.stderr) {
+        outputText = (outputText ? outputText + "\n" : "") + result.stderr;
       }
 
-      const duration = Math.round(performance.now() - startTime + 80);
-      setConsoleOutput(output);
-      setExitCode(0);
-      setExecDuration(duration);
+      setConsoleOutput(outputText);
+      setExitCode(result.exitCode);
+      setExecDuration(result.durationMs);
       setIsRunning(false);
-    }, 600);
+    }, 300);
+  };
+
+  const handleSaveToWorkspace = () => {
+    const res = writeFile("script.sh", ["home", "student", "workspace"], code, false);
+    if (res.success) {
+      setSaveNotice("Saved to ~/workspace/script.sh");
+    } else {
+      setSaveNotice("Failed to save");
+    }
+    setTimeout(() => setSaveNotice(null), 2500);
   };
 
   return (
@@ -300,6 +271,21 @@ No deadlock can occur under current resource allocation.`;
 
         {/* Action Buttons */}
         <div className="flex items-center gap-2">
+          {saveNotice && (
+            <span className="text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+              {saveNotice}
+            </span>
+          )}
+
+          <button
+            onClick={handleSaveToWorkspace}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 transition-all active:scale-95 border border-slate-200"
+            title="Save script to ~/workspace/script.sh"
+          >
+            <Save size={13} className="text-blue-600" />
+            <span>Save to Workspace</span>
+          </button>
+
           <button
             onClick={handleRunScript}
             disabled={isRunning}
