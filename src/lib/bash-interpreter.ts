@@ -692,7 +692,5 @@ export function* executeBashScriptInteractive(
     exitCode = 1;
   }
 
-  if (!hasOutput) yield { type: "output", line: "[Script executed with exit code 0]" };
-
   yield { type: "done", exitCode, durationMs: Math.round(performance.now() - startTime + 30) };
 }

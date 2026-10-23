@@ -172,12 +172,10 @@ consume
 };
 
 // Console line types
-type ConsoleLine =
-  | { kind: "output"; text: string }
-  | { kind: "prompt"; text: string }
-  | { kind: "userInput"; text: string }
-  | { kind: "error"; text: string }
-  | { kind: "info"; text: string };
+type ConsoleLine = {
+  text: string;
+  isError?: boolean;
+};
 
 // Execution phases
 type Phase = "idle" | "waiting_input" | "executing" | "done";
@@ -197,6 +195,7 @@ export function BashStudioApp() {
 
   // Interactive input state
   const [currentTyping, setCurrentTyping] = useState("");
+  const [currentPrompt, setCurrentPrompt] = useState("");
 
   // Generator ref — holds the running script generator between renders
   const genRef = useRef<Generator<InteractiveYield, void, string> | null>(null);
@@ -214,13 +213,14 @@ export function BashStudioApp() {
     if (phase === "waiting_input") {
       setTimeout(() => inputRef.current?.focus(), 50);
     }
-  }, [phase, currentReadIdx]);
+  }, [phase]);
 
   const resetConsole = () => {
     setConsoleLines([]);
     setExitCode(null);
     setExecDuration(null);
     setCurrentTyping("");
+    setCurrentPrompt("");
     genRef.current = null;
   };
 
@@ -235,7 +235,6 @@ export function BashStudioApp() {
 
   /**
    * Advance the generator until it hits a `read` (needs user input) or finishes.
-   * Pass `inputValue` when resuming after a read.
    */
   const advanceGenerator = (inputValue?: string) => {
     const gen = genRef.current;
@@ -249,28 +248,25 @@ export function BashStudioApp() {
       const yld = result.value;
 
       if (yld.type === "output") {
-        newLines.push({ kind: "output", text: yld.line });
+        newLines.push({ text: yld.line });
         result = gen.next();
         continue;
       }
 
       if (yld.type === "stderr") {
-        newLines.push({ kind: "error", text: yld.line });
+        newLines.push({ text: yld.line, isError: true });
         result = gen.next();
         continue;
       }
 
       if (yld.type === "read") {
-        // Flush collected output first, then pause for input
-        if (yld.prompt) newLines.push({ kind: "prompt", text: yld.prompt });
         setConsoleLines((prev) => [...prev, ...newLines]);
+        setCurrentPrompt(yld.prompt || "");
         setPhase("waiting_input");
-        return;  // stop — wait for user to type
+        return;
       }
 
       if (yld.type === "done") {
-        newLines.push({ kind: "info", text: "-----------------------------------------" });
-        newLines.push({ kind: "info", text: `Process exited with code ${yld.exitCode}  [${yld.durationMs}ms]` });
         setConsoleLines((prev) => [...prev, ...newLines]);
         setExitCode(yld.exitCode);
         setExecDuration(yld.durationMs);
@@ -281,7 +277,6 @@ export function BashStudioApp() {
       result = gen.next();
     }
 
-    // Generator exhausted
     if (newLines.length) setConsoleLines((prev) => [...prev, ...newLines]);
     setPhase("done");
   };
@@ -290,16 +285,9 @@ export function BashStudioApp() {
     resetConsole();
     setPhase("executing");
 
-    // Create generator and store in ref
     genRef.current = executeBashScriptInteractive(code, customArgs);
 
-    setConsoleLines([
-      { kind: "info", text: "ShellSpace Linux  -  script.sh" },
-      { kind: "info", text: "-----------------------------------------" },
-    ]);
-
-    // Start advancing after short delay for UI to paint
-    setTimeout(() => advanceGenerator(), 100);
+    setTimeout(() => advanceGenerator(), 50);
   };
 
   const handleConsoleSubmit = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -307,45 +295,22 @@ export function BashStudioApp() {
     e.preventDefault();
 
     const value = currentTyping;
+    const prompt = currentPrompt;
+
     setCurrentTyping("");
+    setCurrentPrompt("");
     setPhase("executing");
 
-    // Echo what user typed in console
-    setConsoleLines((prev) => [...prev, { kind: "userInput", text: value }]);
+    // Output line with prompt and user's entered value
+    setConsoleLines((prev) => [...prev, { text: (prompt || "") + value }]);
 
-    // Resume generator with user's input
-    setTimeout(() => advanceGenerator(value), 50);
+    setTimeout(() => advanceGenerator(value), 30);
   };
 
   const handleSaveToWorkspace = () => {
     const res = writeFile("script.sh", ["home", "student", "workspace"], code, false);
     setSaveNotice(res.success ? "Saved to ~/workspace/script.sh" : "Failed to save");
     setTimeout(() => setSaveNotice(null), 2500);
-  };
-
-  const renderLine = (line: ConsoleLine, i: number) => {
-    switch (line.kind) {
-      case "output":
-        return <div key={i} className="text-emerald-300 leading-snug whitespace-pre-wrap">{line.text || "\u00a0"}</div>;
-      case "prompt":
-        return (
-          <div key={i} className="text-amber-300 font-semibold leading-snug flex items-start gap-1 mt-0.5">
-            <span className="text-amber-500 mt-px shrink-0">?</span>
-            <span>{line.text}</span>
-          </div>
-        );
-      case "userInput":
-        return (
-          <div key={i} className="text-sky-300 leading-snug flex items-center gap-1">
-            <span className="text-sky-500 select-none shrink-0">›</span>
-            <span>{line.text || <span className="text-slate-600 italic">(empty)</span>}</span>
-          </div>
-        );
-      case "error":
-        return <div key={i} className="text-rose-400 leading-snug">{line.text}</div>;
-      case "info":
-        return <div key={i} className="text-slate-500 leading-snug">{line.text}</div>;
-    }
   };
 
   const isRunning = phase === "executing" || phase === "waiting_input";
@@ -436,38 +401,38 @@ export function BashStudioApp() {
         </div>
 
         {/* Console Pane */}
-        <div className="w-full md:w-[45%] flex flex-col bg-[#0d1117] overflow-hidden">
+        <div className="w-full md:w-[45%] flex flex-col bg-slate-900 text-slate-100 overflow-hidden">
           {/* Console Header */}
-          <div className="h-8 px-3 bg-[#010409] border-b border-slate-800 flex items-center justify-between text-xs flex-shrink-0">
-            <div className="flex items-center gap-2 text-slate-300 font-mono text-xs">
+          <div className="h-8 px-3 bg-slate-950 border-b border-slate-800 flex items-center justify-between text-xs flex-shrink-0">
+            <div className="flex items-center gap-1.5 text-slate-300 font-mono text-xs">
               <Terminal size={13} className="text-emerald-400" />
               <span>Execution Console</span>
-              {phase === "waiting_input" && (
-                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse">
-                  INPUT
-                </span>
-              )}
             </div>
             <div className="flex items-center gap-2">
               {exitCode !== null && (
-                <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono font-medium ${
-                  exitCode === 0
-                    ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
-                    : "bg-rose-500/20 text-rose-300 border border-rose-500/30"
-                }`}>
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded font-mono font-medium ${
+                    exitCode === 0
+                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                      : "bg-rose-500/20 text-rose-300 border border-rose-500/30"
+                  }`}
+                >
                   Exit: {exitCode}
                 </span>
               )}
               {execDuration != null && (
-                <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                <span className="text-[10px] text-slate-400 flex items-center gap-1">
                   <Clock size={10} />
                   {execDuration}ms
                 </span>
               )}
               <button
-                onClick={() => { resetConsole(); setPhase("idle"); }}
+                onClick={() => {
+                  resetConsole();
+                  setPhase("idle");
+                }}
                 title="Clear console"
-                className="text-slate-500 hover:text-white transition-colors"
+                className="text-slate-400 hover:text-white transition-colors"
               >
                 <RotateCcw size={11} />
               </button>
@@ -476,22 +441,34 @@ export function BashStudioApp() {
 
           {/* Console Body */}
           <div
-            className="flex-1 p-3 overflow-y-auto font-mono text-xs leading-relaxed"
-            onClick={() => { if (phase === "waiting_input") inputRef.current?.focus(); }}
+            className="flex-1 p-3 overflow-y-auto font-mono text-xs text-emerald-400 leading-relaxed whitespace-pre-wrap select-text"
+            onClick={() => {
+              if (phase === "waiting_input") inputRef.current?.focus();
+            }}
           >
             {consoleLines.length === 0 && phase === "idle" ? (
-              <div className="text-slate-600 italic text-xs">
-                Click &quot;Run Script&quot; to execute.{" "}
-                <span className="text-amber-500/80">If your script uses <code className="font-bold">read</code>, you will be prompted here interactively — just like a real terminal.</span>
+              <div className="text-slate-500 italic">
+                Click &quot;Run Script&quot; to execute the Bash code and see standard output...
               </div>
             ) : (
               <>
-                {consoleLines.map((line, i) => renderLine(line, i))}
+                {consoleLines.map((line, i) => (
+                  <div
+                    key={i}
+                    className={`${
+                      line.isError ? "text-rose-400" : "text-emerald-400"
+                    } leading-relaxed`}
+                  >
+                    {line.text || "\u00a0"}
+                  </div>
+                ))}
 
                 {/* Inline interactive input */}
                 {phase === "waiting_input" && (
-                  <div className="flex items-center gap-1 mt-0.5">
-                    <span className="text-sky-500 select-none shrink-0">›</span>
+                  <div className="flex items-center text-emerald-400 leading-relaxed">
+                    {currentPrompt ? (
+                      <span className="whitespace-pre">{currentPrompt}</span>
+                    ) : null}
                     <input
                       ref={inputRef}
                       type="text"
@@ -500,10 +477,8 @@ export function BashStudioApp() {
                       onKeyDown={handleConsoleSubmit}
                       autoFocus
                       spellCheck={false}
-                      className="flex-1 bg-transparent border-none outline-none text-sky-300 font-mono text-xs caret-sky-400 placeholder:text-slate-700"
-                      placeholder="type here and press Enter..."
+                      className="flex-1 bg-transparent border-none outline-none text-emerald-400 font-mono text-xs caret-emerald-400 p-0 m-0"
                     />
-                    <span className="animate-pulse text-sky-400 select-none ml-0.5">█</span>
                   </div>
                 )}
               </>
