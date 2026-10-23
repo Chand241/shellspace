@@ -1,0 +1,507 @@
+// NexaOS Prisma Schema
+// PostgreSQL + UUID primary keys + UTC timestamps
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── ENUMS ────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  STUDENT
+  TEACHER
+  ADMIN
+}
+
+enum SubmissionStatus {
+  DRAFT
+  SUBMITTED
+  QUEUED
+  RUNNING
+  ACCEPTED
+  FAILED
+  UNDER_REVIEW
+  GRADED
+  RETURNED
+}
+
+enum ExecutionStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  TIMEOUT
+  CANCELLED
+}
+
+enum AssignmentStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum FileType {
+  FILE
+  DIRECTORY
+}
+
+enum LabDifficulty {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+}
+
+enum NotificationType {
+  INFO
+  SUCCESS
+  WARNING
+  ERROR
+}
+
+enum ActivityType {
+  LOGIN
+  LOGOUT
+  TERMINAL_COMMAND
+  ASSIGNMENT_OPEN
+  ASSIGNMENT_SUBMIT
+  ASSIGNMENT_VIEW
+  FILE_CREATE
+  FILE_EDIT
+  FILE_DELETE
+  PROFILE_UPDATE
+  SUBMISSION_GRADED
+}
+
+// ─── AUTH & USERS ─────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  name          String
+  passwordHash  String
+  role          UserRole  @default(STUDENT)
+  isActive      Boolean   @default(true)
+  emailVerified DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  profile             UserProfile?
+  sessions            Session[]
+  workspace           Workspace?
+  desktopPreference   DesktopPreference?
+  enrollments         Enrollment[]
+  courseTeacher       CourseTeacher[]
+  submissions         LabSubmission[]
+  gradedSubmissions   LabSubmission[]    @relation("GradedBy")
+  executionJobs       ExecutionJob[]
+  notifications       Notification[]
+  auditLogs           AuditLog[]
+  activityLogs        ActivityLog[]
+  teacherFeedback     TeacherFeedback[]  @relation("FeedbackGiver")
+
+  @@index([email])
+  @@index([role])
+}
+
+model UserProfile {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  bio         String?
+  avatarUrl   String?
+  studentId   String?
+  department  String?
+  year        Int?
+  phone       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  userId       String
+  sessionToken String   @unique
+  expires      DateTime
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([sessionToken])
+  @@index([userId])
+}
+
+// ─── COURSES & ENROLLMENT ─────────────────────────────────────────────────────
+
+model Course {
+  id          String   @id @default(uuid())
+  code        String   @unique
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  teachers    CourseTeacher[]
+  enrollments Enrollment[]
+  assignments LabAssignment[]
+
+  @@index([code])
+}
+
+model CourseTeacher {
+  id        String   @id @default(uuid())
+  courseId  String
+  userId    String
+  createdAt DateTime @default(now())
+
+  course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([courseId, userId])
+  @@index([courseId])
+  @@index([userId])
+}
+
+model Enrollment {
+  id         String   @id @default(uuid())
+  courseId   String
+  userId     String
+  enrolledAt DateTime @default(now())
+
+  course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([courseId, userId])
+  @@index([courseId])
+  @@index([userId])
+}
+
+// ─── VIRTUAL DESKTOP ──────────────────────────────────────────────────────────
+
+model Workspace {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  name        String   @default("My Workspace")
+  storageMb   Int      @default(0)
+  maxStorageMb Int     @default(500)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user  User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  files WorkspaceFile[]
+}
+
+model WorkspaceFile {
+  id           String   @id @default(uuid())
+  workspaceId  String
+  parentId     String?
+  name         String
+  path         String
+  type         FileType @default(FILE)
+  content      String?  @db.Text
+  storageKey   String?  // For S3/object storage
+  mimeType     String?
+  sizeBytes    Int      @default(0)
+  isExecutable Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  workspace Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  parent    WorkspaceFile? @relation("FileTree", fields: [parentId], references: [id])
+  children  WorkspaceFile[] @relation("FileTree")
+
+  @@unique([workspaceId, path])
+  @@index([workspaceId])
+  @@index([parentId])
+}
+
+model DesktopPreference {
+  id              String   @id @default(uuid())
+  userId          String   @unique
+  theme           String   @default("light")
+  wallpaper       String   @default("gradient-blue")
+  iconSize        Int      @default(48)
+  taskbarPosition String   @default("bottom")
+  openApps        Json     @default("[]")
+  desktopIcons    Json     @default("[]")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ─── LAB CONTENT ──────────────────────────────────────────────────────────────
+
+model LabCategory {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  slug        String   @unique
+  description String?
+  icon        String?
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  assignments LabAssignment[]
+}
+
+model LabAssignment {
+  id                 String           @id @default(uuid())
+  title              String
+  description        String           @db.Text
+  categoryId         String
+  courseId           String?
+  createdById        String
+  status             AssignmentStatus @default(DRAFT)
+  difficulty         LabDifficulty    @default(BEGINNER)
+  objectives         Json             @default("[]")
+  instructions       String           @db.Text
+  exampleInput       String?          @db.Text
+  exampleOutput      String?          @db.Text
+  maxMarks           Int              @default(100)
+  passingMarks       Int              @default(50)
+  startTime          DateTime?
+  deadline           DateTime?
+  lateSubmissionPolicy String?
+  maxAttempts        Int              @default(1)
+  allowedFileTypes   Json             @default("[\"sh\"]")
+  executionTimeout   Int              @default(5)
+  memoryLimitMb      Int              @default(128)
+  autoGrade          Boolean          @default(false)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  category     LabCategory       @relation(fields: [categoryId], references: [id])
+  course       Course?           @relation(fields: [courseId], references: [id])
+  starterFiles LabStarterFile[]
+  testCases    LabTestCase[]
+  rubric       LabGradingRubric?
+  submissions  LabSubmission[]
+
+  @@index([categoryId])
+  @@index([courseId])
+  @@index([status])
+  @@index([deadline])
+}
+
+model LabStarterFile {
+  id           String   @id @default(uuid())
+  assignmentId String
+  name         String
+  content      String   @db.Text
+  isRequired   Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  assignment LabAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+}
+
+model LabTestCase {
+  id              String   @id @default(uuid())
+  assignmentId    String
+  title           String
+  description     String?
+  input           String?  @db.Text
+  expectedOutput  String   @db.Text
+  expectedExitCode Int     @default(0)
+  marks           Int      @default(10)
+  isHidden        Boolean  @default(false)
+  timeout         Int      @default(5)
+  normalizeOutput Boolean  @default(true)
+  order           Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  assignment LabAssignment          @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  results    SubmissionTestResult[]
+
+  @@index([assignmentId])
+}
+
+model LabGradingRubric {
+  id           String   @id @default(uuid())
+  assignmentId String   @unique
+  criteria     Json     // Array of {name, description, maxMarks}
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  assignment LabAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+}
+
+// ─── SUBMISSIONS & EXECUTION ──────────────────────────────────────────────────
+
+model LabSubmission {
+  id              String           @id @default(uuid())
+  studentId       String
+  assignmentId    String
+  attemptNumber   Int              @default(1)
+  status          SubmissionStatus @default(DRAFT)
+  scriptSnapshot  String?          @db.Text
+  answers         Json?
+  autoScore       Float?
+  teacherScore    Float?
+  finalScore      Float?
+  gradedById      String?
+  gradedAt        DateTime?
+  submittedAt     DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  student        User               @relation(fields: [studentId], references: [id])
+  assignment     LabAssignment      @relation(fields: [assignmentId], references: [id])
+  gradedBy       User?              @relation("GradedBy", fields: [gradedById], references: [id])
+  files          SubmissionFile[]
+  executionJobs  ExecutionJob[]
+  testResults    SubmissionTestResult[]
+  feedback       TeacherFeedback[]
+
+  @@unique([studentId, assignmentId, attemptNumber])
+  @@index([studentId])
+  @@index([assignmentId])
+  @@index([status])
+}
+
+model SubmissionFile {
+  id           String   @id @default(uuid())
+  submissionId String
+  name         String
+  content      String?  @db.Text
+  storageKey   String?
+  sizeBytes    Int      @default(0)
+  mimeType     String?
+  createdAt    DateTime @default(now())
+
+  submission LabSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+}
+
+model ExecutionJob {
+  id            String          @id @default(uuid())
+  userId        String
+  submissionId  String?
+  script        String          @db.Text
+  stdin         String?         @db.Text
+  status        ExecutionStatus @default(PENDING)
+  stdout        String?         @db.Text
+  stderr        String?         @db.Text
+  exitCode      Int?
+  durationMs    Int?
+  memoryUsedMb  Float?
+  timeoutSec    Int             @default(5)
+  memoryLimitMb Int             @default(128)
+  errorMessage  String?
+  runnerJobId   String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  completedAt   DateTime?
+
+  user       User           @relation(fields: [userId], references: [id])
+  submission LabSubmission? @relation(fields: [submissionId], references: [id])
+
+  @@index([userId])
+  @@index([submissionId])
+  @@index([status])
+}
+
+model SubmissionTestResult {
+  id           String   @id @default(uuid())
+  submissionId String
+  testCaseId   String
+  passed       Boolean  @default(false)
+  actualOutput String?  @db.Text
+  actualExitCode Int?
+  durationMs   Int?
+  marksAwarded Float    @default(0)
+  errorMessage String?
+  createdAt    DateTime @default(now())
+
+  submission LabSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  testCase   LabTestCase   @relation(fields: [testCaseId], references: [id])
+
+  @@unique([submissionId, testCaseId])
+  @@index([submissionId])
+}
+
+model TeacherFeedback {
+  id           String   @id @default(uuid())
+  submissionId String
+  teacherId    String
+  comment      String   @db.Text
+  marksAwarded Float?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  submission LabSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  teacher    User          @relation("FeedbackGiver", fields: [teacherId], references: [id])
+}
+
+// ─── SUPPORTING SYSTEMS ───────────────────────────────────────────────────────
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType @default(INFO)
+  title     String
+  message   String
+  isRead    Boolean          @default(false)
+  link      String?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isRead])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  action     String
+  resource   String
+  resourceId String?
+  details    Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model ApplicationSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  @@index([key])
+}
+
+// ─── ACTIVITY HISTORY ─────────────────────────────────────────────────────────
+
+model ActivityLog {
+  id           String       @id @default(uuid())
+  userId       String
+  type         ActivityType
+  title        String       // Short human-readable title
+  description  String?      // Optional extra detail
+  metadata     Json?        // Extra data: command text, assignmentId, etc.
+  ipAddress    String?
+  date         DateTime     @default(now()) // Used for day-wise grouping
+  createdAt    DateTime     @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, date])
+  @@index([type])
+  @@index([date])
+}
